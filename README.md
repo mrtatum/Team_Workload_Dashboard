@@ -94,35 +94,19 @@ In the [Azure Portal](https://portal.azure.com) → **App registrations**:
 
 ### 2. Generate the refresh token (one time)
 
-Use the OAuth 2.0 **device-code flow**. Minimal standalone script:
-
-```python
-# get_refresh_token.py — run once, signs you in, prints the refresh token
-import requests, time, os
-CLIENT_ID = os.environ["CLIENT_ID"]
-TENANT_ID = os.environ.get("TENANT_ID", "organizations")
-SCOPES    = "offline_access Files.Read.All User.Read"
-AUTH = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0"
-
-dc = requests.post(f"{AUTH}/devicecode",
-                   data={"client_id": CLIENT_ID, "scope": SCOPES}).json()
-print(dc["message"])                       # open the URL, enter the code, sign in
-while True:
-    r = requests.post(f"{AUTH}/token", data={
-        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        "client_id": CLIENT_ID, "device_code": dc["device_code"]}).json()
-    if "refresh_token" in r:
-        print("REFRESH_TOKEN=", r["refresh_token"]); break
-    if r.get("error") not in ("authorization_pending", "slow_down"):
-        raise SystemExit(r); time.sleep(dc.get("interval", 5))
-```
+Use the included **`get_refresh_token.py`** helper (OAuth 2.0 device-code flow):
 
 ```bash
-CLIENT_ID=<your-client-id> python get_refresh_token.py
+pip install -r requirements.txt
+cp .env.example .env          # set CLIENT_ID and TENANT_ID first
+python get_refresh_token.py
 ```
 
-Sign in with the work/school account that **owns** the `Sysinfra_Workload`
-OneDrive. Copy the printed `REFRESH_TOKEN` into your `.env`.
+It prints a short code and URL — open the URL, enter the code, and sign in with
+the work/school account that **owns** the `Sysinfra_Workload` OneDrive. On
+success it writes `token.json` and prints the refresh token. Copy that value
+into your `.env` as `REFRESH_TOKEN`, **or** keep `token.json` and point
+`TOKEN_FILE` at it.
 
 > If a token is ever revoked or lapses, just re-run the script. If you get
 > "No refresh_token returned", confirm `offline_access` is in the scopes and
@@ -377,6 +361,8 @@ healthcheck.
 team_dashboard/
 ├── server.py            # Flask backend: pulls + parses workbooks, serves API + HTML
 ├── onedrive_source.py   # OneDrive loader (refresh-token auth) + LOCAL_DATA_DIR mode
+├── get_refresh_token.py # one-time: device-code sign-in -> token.json
+├── build-and-push.sh    # build multi-arch image and push to GHCR
 ├── static/
 │   ├── index.html       # the dashboard (Chart.js, dark theme)
 │   └── projects.html    # per-project view
