@@ -1,0 +1,13 @@
+services:
+  team-dashboard:
+    build: .
+    image: team-workload-dashboard:latest
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    restart: unless-stopped
+    # To use a mounted token.json instead of REFRESH_TOKEN, uncomment and set
+    # TOKEN_FILE=/secrets/token.json in .env:
+    # volumes:
+    #   - ../onedrive_auth/token.json:/secrets/token.json:ro

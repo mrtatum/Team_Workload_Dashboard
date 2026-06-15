@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Project Analytics</title>
+<style>
+  :root{
+    --bg:#0f1014; --panel:#181b1f; --panel2:#1f242b; --border:#23272e;
+    --text:#d8d9da; --muted:#8e8e8e;
+    --green:#73BF69; --blue:#5794F2; --orange:#FF9830; --red:#F2495C; --gray:#4b5159;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Inter','Segoe UI',Roboto,sans-serif;font-size:16px;}
+  .topbar{display:flex;align-items:center;gap:12px;padding:14px 20px;flex-wrap:wrap;
+    border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:5;}
+  .topbar .dot{width:10px;height:10px;border-radius:50%;background:var(--blue);box-shadow:0 0 8px var(--blue);}
+  .topbar h1{font-size:19px;font-weight:600;color:#fff;margin:0;}
+  .topbar .spacer{margin-left:auto;}
+  a.btn,button{background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:3px;padding:6px 10px;font-size:15px;font-family:inherit;cursor:pointer;text-decoration:none;}
+  a.btn:hover,button:hover{border-color:var(--blue);}
+  input[type=text],select{background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:3px;padding:7px 10px;font-size:15px;font-family:inherit;min-width:220px;}
+  input[type=text]:focus{outline:none;border-color:var(--blue);}
+  /* keep browser autofill/suggestion highlight from repainting the box */
+  input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{
+    -webkit-box-shadow:0 0 0 1000px var(--panel2) inset;
+    -webkit-text-fill-color:var(--text);transition:background-color 99999s ease-in-out 0s;}
+  input.mpick{background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:3px;padding:6px 10px;font-size:14px;font-family:inherit;width:110px;
+    min-width:110px;cursor:pointer;caret-color:transparent;}
+  input.mpick:hover,input.mpick:focus{border-color:var(--blue);outline:none;}
+  .mp{position:absolute;background:#20252c;border:1px solid var(--border);border-radius:5px;
+    padding:10px;z-index:60;box-shadow:0 6px 22px rgba(0,0,0,.55);display:none;width:240px;}
+  .mp .mhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;}
+  .mp .mhead b{font-size:15px;color:#fff;}
+  .mp .mhead button{padding:3px 10px;font-size:14px;}
+  .mp .mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+  .mp button.mn{padding:7px 0;font-size:13px;width:100%;}
+  .mp button.mn:disabled{opacity:.28;cursor:default;border-color:var(--border);}
+  .mp button.mn.sel{background:var(--blue);color:#fff;border-color:var(--blue);}
+  label.lbl{font-size:14px;color:var(--muted);}
+  .wrap{padding:18px 20px;max-width:1500px;margin:0 auto;}
+  .grid-kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px;}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:12px 14px;}
+  .kpi .label{color:var(--muted);font-size:14px;}
+  .kpi .value{font-size:30px;font-weight:600;color:#fff;line-height:1.2;margin-top:4px;}
+  .kpi .value small{font-size:15px;color:var(--muted);}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:12px 14px;margin-bottom:16px;}
+  .panel .ptitle{font-size:15px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .panel .ptitle .hint{color:var(--muted);font-weight:400;font-size:14px;}
+  .chartbox{position:relative;width:100%;}
+  table.tbl{width:100%;border-collapse:collapse;font-size:14px;}
+  .tbl th{color:var(--muted);font-weight:500;text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);}
+  .tbl td{padding:6px 10px;border-bottom:1px solid #1d2127;}
+  .tbl tr:hover td{background:#1d2228;}
+  .tag{display:inline-block;border-radius:3px;padding:1px 8px;font-size:12.5px;font-weight:600;}
+  .tag.MA{background:rgba(255,152,48,.18);color:#FF9830;}
+  .tag.IMP{background:rgba(87,148,242,.18);color:#5794F2;}
+  .tag.Other{background:rgba(142,142,142,.18);color:#aeb2b7;}
+  .tag.nb{background:rgba(75,81,89,.35);color:#aeb2b7;}
+  .chip{display:inline-block;background:var(--panel2);border:1px solid var(--border);
+    border-radius:3px;padding:1px 7px;font-size:12.5px;margin:1px 3px 1px 0;color:var(--text);}
+  .muted{color:var(--muted);}
+  .err{background:rgba(242,73,92,.12);border:1px solid var(--red);color:#ffb3bd;padding:14px 16px;border-radius:4px;margin-bottom:14px;}
+  .clickable{cursor:pointer;color:var(--blue);}
+  .clickable:hover{text-decoration:underline;}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="dot"></span>
+  <h1>Project Analytics</h1>
+  <span id="modeBadge" class="hint muted"></span>
+  <div class="spacer"></div>
+  <label class="lbl" for="teamSel">Sub team</label>
+  <select id="teamSel"></select>
+  <label class="lbl" for="yearSel">Year</label>
+  <select id="yearSel"></select>
+  <label class="lbl" for="monthSel">Month</label>
+  <select id="monthSel"></select>
+  <a class="btn" href="/">← Workload dashboard</a>
+  <button id="reloadBtn">↻ Reload</button>
+</div>
+
+<div class="wrap">
+  <div id="error"></div>
+  <div id="kpis" class="grid-kpi"></div>
+
+  <div class="panel">
+    <div class="ptitle">Top 10 projects by effort
+      <span class="hint" id="topHint"></span>
+      <span class="hint">MA = CMA+PMA · IMP = implementation · MFE* projects excluded · click a bar for details</span></div>
+    <div class="chartbox" id="topBox" style="height:340px;"><canvas id="topChart"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">🔎 Project and Customer lookup
+      <span class="hint">type a project code or customer name — shows matching projects, who is involved, when, and how much</span></div>
+    <input type="text" id="projSearch" placeholder="Project code or customer…" autocomplete="off">
+    <div id="projDetail" style="margin-top:12px;"></div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">👤 Person lookup
+      <span class="hint">pick a person and a period — shows every project they worked on</span></div>
+    <input type="text" id="personSearch" list="personList" placeholder="Person name…">
+    <datalist id="personList"></datalist>
+    <label class="lbl">from</label><input type="text" class="mpick" id="fromSel" readonly placeholder="month…">
+    <label class="lbl">to</label><input type="text" class="mpick" id="toSel" readonly placeholder="month…">
+    <span class="hint">monthly 26→25 billing periods</span>
+    <div class="mp" id="mPop">
+      <div class="mhead">
+        <button id="mpPrev">‹</button><b id="mpYear"></b><button id="mpNext">›</button>
+      </div>
+      <div class="mgrid" id="mpGrid"></div>
+    </div>
+    <div id="personDetail" style="margin-top:12px;"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const C={green:'#73BF69',blue:'#5794F2',orange:'#FF9830',red:'#F2495C',
+  muted:'#8e8e8e',grid:'#23272e',text:'#d8d9da',gray:'#4b5159'};
+const MABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let DATA=null,charts={},teamFilter='All',FP=[];
+const r1=v=>Math.round(v*10)/10;
+const teamSel=()=>document.getElementById('teamSel');
+const yearSel=()=>document.getElementById('yearSel');
+const monthSel=()=>document.getElementById('monthSel');
+function inRange(k){
+  const y=yearSel().value,m=monthSel().value;
+  if(y!=='all'&&!k.startsWith(y+'-'))return false;
+  if(m!=='all'&&k.slice(5,7)!==m)return false;
+  return true;
+}
+function periodLabel(){
+  const y=yearSel().value,m=monthSel().value;
+  if(y==='all')return m==='all'?'all data':MABBR[+m-1]+' (all years)';
+  return m==='all'?`all of ${y}`:`${MABBR[+m-1]} ${y}`;
+}
+// Apply the sub team / year / month filters to the project list:
+// people are filtered by team, hours by period; empty entries drop out.
+function filteredProjects(){
+  const list=[];
+  for(const p of DATA.projects||[]){
+    const ppl=[],ftasks={};
+    for(const q of p.people){
+      if(teamFilter!=='All'&&q.team!==teamFilter)continue;
+      const months={},ptasks={};let h=0;
+      for(const k of Object.keys(q.months).sort()){
+        if(!inRange(k))continue;
+        const cell=q.months[k],mh=cellHours(cell);
+        months[k]=r1(mh);h+=mh;
+        if(typeof cell==='object')
+          for(const cat in cell){
+            ftasks[cat]=r1((ftasks[cat]||0)+cell[cat]);
+            ptasks[cat]=r1((ptasks[cat]||0)+cell[cat]);
+          }
+      }
+      if(h>0)ppl.push({name:q.name,team:q.team,hours:r1(h),months,tasks:ptasks});
+    }
+    if(!ppl.length)continue;
+    ppl.sort((a,b)=>b.hours-a.hours);
+    list.push(Object.assign({},p,{hours:r1(ppl.reduce((s,q)=>s+q.hours,0)),
+      people:ppl,ftasks}));
+  }
+  list.sort((a,b)=>b.hours-a.hours);
+  return list;
+}
+const fmtKey=k=>{const[y,m]=k.split('-');return MABBR[+m-1]+" '"+y.slice(2);};
+const typeColor=t=>t==='MA'?C.orange:(t==='IMP'?C.blue:'#6b7077');
+// same task palette as the workload dashboard
+const TASK_COLORS={
+  'Implement':'#5794F2',
+  'Corrective Maintenance':'#FF9830',
+  'Preventive Maintenance':'#FADE2A',
+  'Presales':'#B877D9',
+  'Meeting':'#73BF69',
+  'Training':'#1F9E89',
+  'Standby':'#8AB8FF',
+  'Leave':'#E0529C',
+  'Others':'#9aa0a6'};
+const TASK_ORDER=['Implement','Corrective Maintenance','Preventive Maintenance','Presales',
+  'Meeting','Training','Standby','Leave','Others'];
+const taskColor=n=>TASK_COLORS[n]||'#6b7077';
+// every type a project has (not just the dominant one), from its task hours
+// in the current filter scope (falls back to all-time mix)
+function typesOf(p){
+  const t=(p.ftasks&&Object.keys(p.ftasks).length)?p.ftasks:(p.tasks||{});
+  const ma=(t['Corrective Maintenance']||0)+(t['Preventive Maintenance']||0);
+  const imp=t['Implement']||0;
+  const out=[];
+  if(ma>0)out.push('MA');
+  if(imp>0)out.push('IMP');
+  if(!out.length)out.push('Other');
+  return out;
+}
+const typeTags=p=>typesOf(p).map(t=>`<span class="tag ${t}">${t}</span>`).join(' ');
+// month cell can be a plain number (legacy) or {category: hours}
+const cellHours=v=>typeof v==='number'?v:Object.values(v||{}).reduce((s,x)=>s+x,0);
+// customer: explicit column if the timesheet has one, else derived from the
+// project-code prefix (leading letters before digits/dash)
+const custOf=p=>p.customer||(String(p.code).match(/^[A-Za-z]+/)||['?'])[0];
+
+function destroy(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function kpiCard(label,value,sub){
+  return`<div class="kpi"><div class="label">${label}</div>
+    <div class="value">${value}${sub?` <small>${sub}</small>`:''}</div></div>`;
+}
+function renderKPIs(){
+  // KPIs count REAL (billable) projects only — MFE* internal codes excluded
+  const ps=FP.filter(p=>p.bill);
+  const custs=new Set(ps.map(custOf));
+  const ma=ps.filter(p=>typesOf(p).includes('MA')).length,
+        imp=ps.filter(p=>typesOf(p).includes('IMP')).length;
+  const tot=ps.reduce((s,p)=>s+p.hours,0);
+  document.getElementById('kpis').innerHTML=
+    kpiCard('Projects',ps.length,periodLabel()+' · excl. MFE')+
+    kpiCard('Customers',custs.size,(DATA.projects||[]).some(p=>p.customer)?'excl. MFE':'by code prefix · excl. MFE')+
+    kpiCard('MA projects',ma,'CMA + PMA · excl. MFE')+
+    kpiCard('IMP projects',imp,'implementation · excl. MFE')+
+    kpiCard('Total effort',Math.round(tot).toLocaleString(),'hours · excl. MFE');
+}
+
+function renderTop10(){
+  destroy('top');
+  document.getElementById('topHint').textContent=
+    periodLabel()+(teamFilter!=='All'?' · '+teamFilter:'')+' ·';
+  const top=FP.filter(p=>p.bill).slice(0,10).reverse();   // billable only, asc for horizontal bars
+  document.getElementById('topBox').style.height=Math.max(220,top.length*32+80)+'px';
+  // stacked by job-task category, fixed colour per type
+  const present=new Set();
+  top.forEach(p=>{for(const c in p.ftasks||{})present.add(c);});
+  const cats=TASK_ORDER.filter(c=>present.has(c))
+    .concat([...present].filter(c=>!TASK_ORDER.includes(c)));
+  const ds=cats.length
+    ?cats.map(cat=>({label:cat,stack:'t',borderWidth:0,barThickness:20,
+        backgroundColor:taskColor(cat),
+        data:top.map(p=>r1((p.ftasks||{})[cat]||0))}))
+    :[{label:'hours',data:top.map(p=>p.hours),     // fallback: no task detail
+        backgroundColor:top.map(p=>typeColor(p.type)),borderWidth:0,barThickness:20}];
+  charts.top=new Chart(document.getElementById('topChart'),{type:'bar',
+    data:{labels:top.map(p=>`${custOf(p)}: ${p.code}`),datasets:ds},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+      onClick:(e,els,chart)=>{
+        const hit=chart.getElementsAtEventForMode(e,'nearest',{axis:'y',intersect:false},true);
+        if(hit.length){const p=top[hit[0].index];
+          document.getElementById('projSearch').value=p.code;showProject(p.code);
+          document.getElementById('projDetail').scrollIntoView({behavior:'smooth'});}
+      },
+      onHover:(e,els,chart)=>{e.native.target.style.cursor=els.length?'pointer':'default';},
+      plugins:{legend:{labels:{color:C.text,boxWidth:12,font:{size:12}}},
+        tooltip:{callbacks:{
+          label:c=>`${c.dataset.label}: ${(+c.raw).toFixed(1)}h`,
+          footer:items=>{const p=top[items[0].dataIndex];
+            return`Total ${p.hours.toFixed(0)}h · ${typesOf(p).join('+')}${p.bill?'':' · non-billable'}`
+              +` · customer ${custOf(p)} · ${p.people.length} people`;}}}},
+      scales:{x:{stacked:true,grid:{color:C.grid},ticks:{color:C.muted,font:{size:12}},
+                 title:{display:true,text:'hours',color:C.muted}},
+              y:{stacked:true,grid:{color:C.grid},ticks:{color:C.text,font:{size:13}}}}}});
+}
+
+function showProject(code){
+  const el=document.getElementById('projDetail');
+  const q=String(code).trim().toLowerCase();
+  if(!q){el.innerHTML='';return;}
+  let p=FP.find(x=>x.code.toLowerCase()===q);
+  if(!p){
+    // partial search: list every project whose code or customer matches
+    const matches=FP.filter(x=>x.code.toLowerCase().includes(q)
+      ||custOf(x).toLowerCase().includes(q));
+    if(!matches.length){
+      el.innerHTML='<span class="muted">No project or customer matches that text in the selected sub team / period.</span>';
+      return;
+    }
+    if(matches.length>1){
+      let html=`<div class="muted" style="margin-bottom:6px;">${matches.length} matching project(s) — click one:</div>
+        <table class="tbl"><tr><th>Project</th><th>Customer</th><th>Type</th><th>Hours</th><th>People</th></tr>`;
+      for(const m of matches.slice(0,30)){
+        html+=`<tr><td><span class="clickable" onclick="document.getElementById('projSearch').value='${esc(m.code)}';showProject('${esc(m.code)}')">${esc(m.code)}</span></td>
+          <td>${esc(custOf(m))}</td>
+          <td>${typeTags(m)}${m.bill?'':' <span class="tag nb">non-bill</span>'}</td>
+          <td>${m.hours.toFixed(1)}</td><td>${m.people.length}</td></tr>`;
+      }
+      el.innerHTML=html+'</table>'+(matches.length>30?'<div class="muted">…more — keep typing to narrow down</div>':'');
+      return;
+    }
+    p=matches[0];
+  }
+  const ft=(p.ftasks&&Object.keys(p.ftasks).length)?p.ftasks:(p.tasks||{});
+  const ma=(ft['Corrective Maintenance']||0)+(ft['Preventive Maintenance']||0);
+  const imp=ft['Implement']||0;
+  const taskRows=Object.entries(ft).sort((a,b)=>b[1]-a[1])
+    .map(([k,v])=>`<span class="chip" style="border-color:${taskColor(k)};color:${taskColor(k)};">${esc(k)}: ${v.toFixed(1)}h</span>`).join(' ');
+  let html=`<div style="margin-bottom:8px;">
+    <b style="font-size:17px;">${esc(p.code)}</b>
+    ${typeTags(p)}
+    ${p.bill?'':'<span class="tag nb">non-billable</span>'}
+    <span class="muted"> · customer ${esc(custOf(p))} · ${p.hours.toFixed(1)}h in ${periodLabel()}
+    (MA ${ma.toFixed(0)}h / IMP ${imp.toFixed(0)}h) · ${p.people.length} people</span></div>
+    <div style="margin-bottom:10px;">${taskRows}</div>
+    <table class="tbl"><tr><th>Person</th><th>Sub team</th><th>Hours</th><th>Job tasks</th><th>Months involved</th></tr>`;
+  for(const q of p.people){
+    const months=Object.entries(q.months).sort((a,b)=>a[0]<b[0]?-1:1)
+      .map(([k,v])=>`<span class="chip">${fmtKey(k)} · ${v}h</span>`).join(' ');
+    const jt=Object.entries(q.tasks||{}).sort((a,b)=>b[1]-a[1])
+      .map(([k,v])=>`<span class="chip" style="border-color:${taskColor(k)};color:${taskColor(k)};">${esc(k)} · ${v}h</span>`)
+      .join(' ')||'<span class="muted">—</span>';
+    html+=`<tr><td><span class="clickable" onclick="pickPerson('${esc(q.name)}')">${esc(q.name)}</span></td>
+      <td>${esc(q.team||'—')}</td><td>${q.hours.toFixed(1)}</td><td>${jt}</td><td>${months}</td></tr>`;
+  }
+  el.innerHTML=html+'</table>';
+}
+
+function allMonthKeys(){
+  const s=new Set();
+  for(const p of DATA.projects||[])for(const q of p.people)for(const k in q.months)s.add(k);
+  return[...s].sort();
+}
+function allPeople(){
+  const s=new Set();
+  for(const p of FP)for(const q of p.people)s.add(q.name);
+  return[...s].sort();
+}
+function pickPerson(name){
+  document.getElementById('personSearch').value=name;
+  showPerson();
+  document.getElementById('personDetail').scrollIntoView({behavior:'smooth'});
+}
+// ---- custom month-picker popup (year ‹ › + 12-month grid) ----
+let mpTarget=null,mpYear=null;
+function mpRange(){const keys=allMonthKeys();return{min:keys[0]||'2000-01',max:keys[keys.length-1]||'2100-12'};}
+function mpOpen(input){
+  mpTarget=input;
+  const cur=input.dataset.val||mpRange().max;
+  mpYear=+cur.slice(0,4);
+  mpRender();
+  const pop=document.getElementById('mPop'),r=input.getBoundingClientRect();
+  pop.style.display='block';
+  pop.style.left=(r.left+window.scrollX)+'px';
+  pop.style.top=(r.bottom+window.scrollY+6)+'px';
+}
+function mpClose(){document.getElementById('mPop').style.display='none';mpTarget=null;}
+function mpRender(){
+  const{min,max}=mpRange();
+  mpYear=Math.min(Math.max(mpYear,+min.slice(0,4)),+max.slice(0,4));
+  document.getElementById('mpYear').textContent=mpYear;
+  document.getElementById('mpPrev').disabled=mpYear<=+min.slice(0,4);
+  document.getElementById('mpNext').disabled=mpYear>=+max.slice(0,4);
+  const sel=mpTarget&&mpTarget.dataset.val;
+  document.getElementById('mpGrid').innerHTML=MABBR.map((nm,i)=>{
+    const k=mpYear+'-'+String(i+1).padStart(2,'0');
+    const dis=k<min||k>max;
+    return`<button class="mn${k===sel?' sel':''}" data-k="${k}" ${dis?'disabled':''}>${nm}</button>`;
+  }).join('');
+}
+document.getElementById('mpPrev').addEventListener('click',()=>{mpYear--;mpRender();});
+document.getElementById('mpNext').addEventListener('click',()=>{mpYear++;mpRender();});
+document.getElementById('mpGrid').addEventListener('click',e=>{
+  const b=e.target.closest('button.mn');
+  if(!b||b.disabled||!mpTarget)return;
+  mpTarget.dataset.val=b.dataset.k;
+  mpTarget.value=fmtKey(b.dataset.k).replace("'","20");   // e.g. Jun 2026
+  mpClose();showPerson();
+});
+document.addEventListener('mousedown',e=>{
+  if(document.getElementById('mPop').style.display==='block'
+    &&!e.target.closest('#mPop')&&!e.target.closest('.mpick'))mpClose();
+});
+function mpSet(id,k){const el=document.getElementById(id);el.dataset.val=k;el.value=fmtKey(k).replace("'","20");}
+document.getElementById('fromSel').addEventListener('click',e=>mpOpen(e.target));
+document.getElementById('toSel').addEventListener('click',e=>mpOpen(e.target));
+
+function showPerson(){
+  const el=document.getElementById('personDetail');
+  const name=document.getElementById('personSearch').value.trim().toLowerCase();
+  if(!name){el.innerHTML='';return;}
+  const fromV=document.getElementById('fromSel').dataset.val||'';
+  const toV=document.getElementById('toSel').dataset.val||'';
+  const inDates=k=>(!fromV||k>=fromV)&&(!toV||k<=toV);
+  const rows=[];
+  for(const p of DATA.projects||[]){
+    const q=p.people.find(x=>x.name.toLowerCase()===name);
+    if(!q)continue;
+    let h=0;const ms=[];
+    for(const[k,v]of Object.entries(q.months).sort((a,b)=>a[0]<b[0]?-1:1)){
+      const vh=r1(cellHours(v));
+      if(inDates(k)&&vh>0){h+=vh;ms.push(`<span class="chip">${fmtKey(k)} · ${vh}h</span>`);}
+    }
+    if(h>0)rows.push({code:p.code,tags:typeTags(p),bill:p.bill,cust:custOf(p),h:r1(h),ms});
+  }
+  if(!rows.length){el.innerHTML='<span class="muted">No project hours for that person in the selected date range (check exact name spelling).</span>';return;}
+  rows.sort((a,b)=>b.h-a.h);
+  const tot=r1(rows.reduce((s,r)=>s+r.h,0));
+  let html=`<div style="margin-bottom:8px;"><b>${esc(document.getElementById('personSearch').value.trim())}</b>
+    <span class="muted"> · ${fromV?fmtKey(fromV):'beginning'} → ${toV?fmtKey(toV):'latest'} · ${rows.length} project(s) · ${tot}h on projects</span></div>
+    <table class="tbl"><tr><th>Project</th><th>Type</th><th>Customer</th><th>Hours</th><th>Months</th></tr>`;
+  for(const r of rows){
+    html+=`<tr><td><span class="clickable" onclick="document.getElementById('projSearch').value='${esc(r.code)}';showProject('${esc(r.code)}');document.getElementById('projDetail').scrollIntoView({behavior:'smooth'});">${esc(r.code)}</span></td>
+      <td>${r.tags}${r.bill?'':' <span class="tag nb">non-bill</span>'}</td>
+      <td>${esc(r.cust)}</td><td>${r.h.toFixed(1)}</td><td>${r.ms.join(' ')}</td></tr>`;
+  }
+  el.innerHTML=html+'</table>';
+}
+
+async function init(refresh){
+  const err=document.getElementById('error');err.innerHTML='';
+  try{
+    const r=await fetch('/api/data'+(refresh?'?refresh=1':''));
+    DATA=await r.json();
+    if(!r.ok||DATA.error)throw new Error(DATA.error||('HTTP '+r.status));
+    document.getElementById('modeBadge').textContent=DATA.mode==='onedrive'?'OneDrive · live':'local data';
+    if(!(DATA.projects||[]).length){
+      err.innerHTML='<div class="err">No project codes found in the data. The Projects page needs timesheets with a Project Code column.</div>';
+      return;
+    }
+    buildFilters();
+    renderAllP();
+    const keys=allMonthKeys();
+    if(keys.length){mpSet('fromSel',keys[0]);mpSet('toSel',keys[keys.length-1]);}
+  }catch(e){
+    err.innerHTML=`<div class="err"><b>Could not load data.</b><br>${esc(e.message)}</div>`;
+  }
+}
+function buildFilters(){
+  teamSel().innerHTML=['All',...(DATA.subteams||[])].map(t=>`<option>${esc(t)}</option>`).join('');
+  teamSel().value=teamFilter='All';
+  const years=[...new Set(allMonthKeys().map(k=>k.slice(0,4)))].sort();
+  yearSel().innerHTML=`<option value="all">All</option>`
+    +years.map(y=>`<option>${y}</option>`).join('');
+  yearSel().value=years[years.length-1];          // newest year
+  buildMonthOptions();
+}
+function buildMonthOptions(){
+  const y=yearSel().value;
+  const ms=[...new Set(allMonthKeys()
+    .filter(k=>y==='all'||k.startsWith(y+'-')).map(k=>k.slice(5,7)))].sort();
+  monthSel().innerHTML=`<option value="all">All</option>`
+    +ms.map(m=>`<option value="${m}">${MABBR[+m-1]}</option>`).join('');
+  monthSel().value='all';
+}
+// re-apply filters and refresh everything visible
+function renderAllP(){
+  FP=filteredProjects();
+  renderKPIs();renderTop10();
+  document.getElementById('personList').innerHTML=
+    allPeople().map(n=>`<option value="${esc(n)}">`).join('');
+  if(document.getElementById('projSearch').value.trim())
+    showProject(document.getElementById('projSearch').value);
+  if(document.getElementById('personSearch').value.trim())showPerson();
+}
+document.getElementById('teamSel').addEventListener('change',e=>{teamFilter=e.target.value;renderAllP();});
+document.getElementById('yearSel').addEventListener('change',()=>{buildMonthOptions();renderAllP();});
+document.getElementById('monthSel').addEventListener('change',renderAllP);
+document.getElementById('projSearch').addEventListener('input',e=>showProject(e.target.value));
+document.getElementById('personSearch').addEventListener('change',showPerson);
+document.getElementById('reloadBtn').addEventListener('click',()=>init(true));
+init(false);
+</script>
+</body>
+</html>

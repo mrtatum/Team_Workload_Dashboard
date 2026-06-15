@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Team Workload Dashboard</title>
+<style>
+  :root{
+    --bg:#0f1014; --panel:#181b1f; --panel2:#1f242b; --border:#23272e;
+    --text:#d8d9da; --muted:#8e8e8e;
+    --green:#73BF69; --blue:#5794F2; --orange:#FF9830; --red:#F2495C; --gray:#4b5159;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Inter','Segoe UI',Roboto,sans-serif;font-size:16px;}
+  .topbar{display:flex;align-items:center;gap:12px;padding:14px 20px;flex-wrap:wrap;
+    border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:5;}
+  .topbar .dot{width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);}
+  .topbar h1{font-size:19px;font-weight:600;color:#fff;margin:0;}
+  .topbar .spacer{margin-left:auto;}
+  .badge{font-size:13px;color:var(--muted);border:1px solid var(--border);
+    border-radius:3px;padding:2px 8px;text-transform:uppercase;letter-spacing:.04em;}
+  label.lbl{font-size:14px;color:var(--muted);}
+  select,button{background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:3px;padding:6px 10px;font-size:15px;font-family:inherit;cursor:pointer;}
+  select:hover,button:hover{border-color:var(--blue);}
+  .wrap{padding:18px 20px;max-width:1500px;margin:0 auto;}
+  .grid-kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px;}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:12px 14px;}
+  .kpi .label{color:var(--muted);font-size:14px;}
+  .kpi .value{font-size:30px;font-weight:600;color:#fff;line-height:1.2;margin-top:4px;}
+  .kpi .value small{font-size:16px;color:var(--muted);}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:12px 14px;margin-bottom:16px;}
+  .panel .ptitle{font-size:15px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+  .panel .ptitle .hint{color:var(--muted);font-weight:400;font-size:14px;}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:900px){.row2{grid-template-columns:1fr;}}
+  .chartbox{position:relative;width:100%;height:300px;}
+  .hm-scroll{overflow-x:auto;padding-bottom:6px;}
+  .hm{border-collapse:separate;border-spacing:2px;}
+  .hm th{font-weight:500;color:var(--muted);font-size:13px;padding:2px;text-align:center;}
+  .hm td.name{color:var(--text);font-size:14px;text-align:right;padding-right:10px;white-space:nowrap;
+    position:sticky;left:0;background:var(--panel);max-width:190px;overflow:hidden;text-overflow:ellipsis;}
+  .hm td.cell{width:var(--cell,16px);height:var(--cell,16px);border-radius:2px;}
+  .hm td.tot{color:var(--text);font-size:14px;padding-left:10px;white-space:nowrap;}
+  .legend{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;margin-top:10px;flex-wrap:wrap;}
+  .legend .sw{width:16px;height:12px;border-radius:2px;display:inline-block;}
+  #tooltip{position:fixed;pointer-events:none;background:#000;border:1px solid var(--border);
+    border-radius:4px;padding:6px 9px;font-size:14px;color:#fff;z-index:50;display:none;white-space:nowrap;}
+  .err{background:rgba(242,73,92,.12);border:1px solid var(--red);color:#ffb3bd;padding:14px 16px;border-radius:4px;}
+  .muted{color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="dot"></span>
+  <h1>Team Workload</h1>
+  <span id="modeBadge" class="badge">loading…</span>
+  <div class="spacer"></div>
+  <label class="lbl" for="teamSel">Sub team</label>
+  <select id="teamSel"></select>
+  <label class="lbl" for="yearSel">Year</label>
+  <select id="yearSel"></select>
+  <label class="lbl" for="monthSel">Month</label>
+  <select id="monthSel"></select>
+  <button id="reloadBtn">↻ Reload</button>
+  <label class="lbl" for="impPct" title="How much of historical Implement (IMP) work is expected to repeat in the future. CMA/PMA always carry forward fully.">IMP carry-over</label>
+  <input id="impPct" type="number" min="0" max="100" value="50" style="width:60px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:6px 6px;font-size:15px;font-family:inherit;">
+  <span class="lbl">%</span>
+  <button id="simBtn" title="Upload planned workload (Excel) to test if the team can absorb it">⚡ Simulate load</button>
+  <a href="/projects" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:6px 10px;font-size:15px;text-decoration:none;">📁 Projects</a>
+  <input type="file" id="simFile" accept=".xlsx,.xls,.csv" style="display:none">
+</div>
+
+<div class="wrap">
+  <div id="error"></div>
+  <div id="kpis" class="grid-kpi"></div>
+
+  <div class="panel">
+    <div class="ptitle">Daily hours heatmap <span class="hint" id="hmHint"></span></div>
+    <div class="hm-scroll"><table class="hm" id="heatmap"></table></div>
+    <div class="legend">
+      <span>0h</span>
+      <span class="sw" style="background:#15171b"></span>
+      <span class="sw" style="background:#1c3b2a"></span>
+      <span class="sw" style="background:#2f7d4f"></span>
+      <span class="sw" style="background:#73BF69"></span>
+      <span class="sw" style="background:#FF9830"></span>
+      <span class="sw" style="background:#F2495C"></span>
+      <span>10h+</span>
+      <span style="margin-left:10px;">green normal · amber long day · red overload</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">Total hours by person <span class="hint" id="hoursMonthHint"></span>
+      <span class="hint">billable (green) vs non-billable (grey) within each total · sum of 26→25</span></div>
+    <div class="chartbox" id="hoursBox"><canvas id="hoursChart"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">Job task mix by person <span class="hint" id="taskMixMonthHint"></span>
+      <span class="hint" id="taskMixModeHint">hours per task, stacked per person · click a bar to drill down</span>
+      <button id="radarBackBtn" style="display:none;margin-left:auto;">← Back to all</button></div>
+    <div class="chartbox" id="taskPersonBox"><canvas id="taskPersonChart"></canvas></div>
+    <div class="row2" id="radarBox" style="display:none;">
+      <div>
+        <div class="ptitle" id="radarMonthTitle" style="justify-content:center;"></div>
+        <div class="chartbox" style="height:400px;"><canvas id="radarChart"></canvas></div>
+      </div>
+      <div>
+        <div class="ptitle" id="radarYearTitle" style="justify-content:center;"></div>
+        <div class="chartbox" style="height:400px;"><canvas id="radarYearChart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">Team resource trend (full year)
+      <span class="hint">capacity = billable usage + convertible non-billable + idle · all months of selected year</span></div>
+    <div class="chartbox" style="height:300px;"><canvas id="trendChart"></canvas></div>
+  </div>
+
+  <div class="panel" id="simPanel" style="display:none;">
+    <div class="ptitle">Load simulator <span class="hint" id="simHint"></span>
+      <button id="simClearBtn" style="margin-left:auto;">✕ Clear simulation</button></div>
+    <div class="chartbox" style="height:320px;"><canvas id="simChart"></canvas></div>
+    <div id="simSummary" style="margin-top:10px;font-size:14px;"></div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">Effort by job task — team (full year)
+      <span class="hint" id="taskTeamHint">% of team capacity across all months of the selected year</span></div>
+    <div class="chartbox" id="taskTeamBox"><canvas id="taskTeamChart"></canvas></div>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+const C={green:'#73BF69',blue:'#5794F2',orange:'#FF9830',red:'#F2495C',
+  muted:'#8e8e8e',grid:'#23272e',text:'#d8d9da',gray:'#4b5159',
+  pgreen:'#A8DDA0',porange:'#F6C99B'};   // pastel shades for bars
+let DATA=null, charts={}, teamFilter='All';
+
+const r1=v=>Math.round(v*10)/10;
+function linreg(ys){              // least-squares best-fit line over the values
+  const n=ys.length; if(n<2) return ys.slice();
+  let sx=0,sy=0,sxx=0,sxy=0;
+  ys.forEach((y,x)=>{sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;});
+  const b=(n*sxy-sx*sy)/(n*sxx-sx*sx||1), a=(sy-b*sx)/n;
+  return ys.map((_,x)=>Math.round((a+b*x)*10)/10);
+}
+function lerp(a,b,t){return Math.round(a+(b-a)*t);}
+function hex(c){return[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)];}
+function mix(c1,c2,t){const a=hex(c1),b=hex(c2);return`rgb(${lerp(a[0],b[0],t)},${lerp(a[1],b[1],t)},${lerp(a[2],b[2],t)})`;}
+function cellColor(h){
+  if(h<=0)return'#15171b';
+  if(h>=10)return C.red;
+  if(h>=8.5)return C.orange;
+  const t=Math.min(h/8.5,1);
+  return t<0.5?mix('#1c3b2a','#2f7d4f',t/0.5):mix('#2f7d4f','#73BF69',(t-0.5)/0.5);
+}
+
+function peopleOf(mo){return teamFilter==='All'?mo.people:mo.people.filter(p=>p.team===teamFilter);}
+
+function aggregate(mo){
+  const ppl=peopleOf(mo);
+  const n=ppl.length;
+  const total=ppl.reduce((s,p)=>s+p.total,0);
+  const bills=ppl.filter(p=>p.bill!=null).map(p=>p.bill);
+  const nonb=ppl.filter(p=>p.nonbill!=null).map(p=>p.nonbill);
+  const ndays=mo.days.length;
+  // Peak day load: highest single-day team total, counting working days only
+  // (weekdays minus the holiday list — same basis as capacity/workdays).
+  const holi=new Set(mo.holidayDates||[]);
+  const isWorkday=i=>{
+    const iso=mo.dates&&mo.dates[i];
+    if(!iso)return true;                      // no date info → keep the day
+    if(holi.has(iso))return false;
+    const dw=new Date(iso+'T00:00:00').getDay();
+    return dw!==0&&dw!==6;                    // drop Sun/Sat
+  };
+  const dailyTotals=Array.from({length:ndays},(_,i)=>ppl.reduce((s,p)=>s+(p.daily[i]||0),0))
+    .filter((_,i)=>isWorkday(i));
+  // Normal capacity = weekday hours × 8 × headcount of the selected sub team.
+  const capacity=mo.workdays*(mo.standardDayHours||8)*n;
+  const billH=ppl.reduce((s,p)=>s+(p.bill!=null?p.total*p.bill/100:0),0);  // billable usage
+  const nonH=Math.max(total-billH,0);                                      // convertible
+  // Utilization excludes Standby hours logged on MFE* (non-billable) projects
+  const standbyNB=ppl.reduce((s,p)=>s+(p.standbyNB||0),0);
+  return {
+    n, total:r1(total),
+    billH:r1(billH), nonH:r1(nonH),
+    idle:r1(Math.max(capacity-total,0)),       // unused capacity
+    avgBill: bills.length?r1(bills.reduce((a,b)=>a+b,0)/bills.length):null,
+    avgNonBill: nonb.length?r1(nonb.reduce((a,b)=>a+b,0)/nonb.length):null,
+    peak: dailyTotals.length?r1(Math.max(...dailyTotals)):0,
+    capacity:r1(capacity),
+    utilization: capacity>0?r1(Math.max(total-standbyNB,0)/capacity*100):null,
+    workdays:mo.workdays,
+  };
+}
+
+async function fetchData(refresh){
+  const r=await fetch('/api/data'+(refresh?'?refresh=1':''));
+  const j=await r.json();
+  if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
+  return j;
+}
+
+function kpiCard(label,value,sub){
+  return`<div class="kpi"><div class="label">${label}</div>
+    <div class="value">${value}${sub?` <small>${sub}</small>`:''}</div></div>`;
+}
+
+function renderKPIs(mo){
+  const a=aggregate(mo);
+  document.getElementById('kpis').innerHTML=
+    kpiCard('Team members',a.n,'')+
+    kpiCard('Total hours',a.total.toLocaleString(),'sum 26→25')+
+    kpiCard('Avg billable',a.avgBill!=null?a.avgBill+'%':'—','')+
+    kpiCard('Utilization',a.utilization!=null?a.utilization+'%':'—','excl. MFE standby')+
+    `<div class="kpi"><div class="label">Billable hours trend <span id="kpiTrendDelta"></span></div>
+       <div style="height:50px;margin-top:8px;"><canvas id="kpiTrendChart"></canvas></div></div>`;
+  renderKpiTrend();
+}
+
+// Mini trend chart: team billable hours Jan→latest month of the selected year,
+// plus a dashed one-month forecast (least-squares) ending in an arrowhead.
+function renderKpiTrend(){
+  destroy('kpiTrend');
+  const cv=document.getElementById('kpiTrendChart');if(!cv)return;
+  const y=yearSel.value;
+  const months=DATA.months.filter(m=>String(m.year||'—')===String(y));
+  if(!months.length)return;
+  const bill=months.map(m=>r1(aggregate(m).billH));   // respects sub-team filter
+  const n=bill.length;
+  // next-month forecast from the shared model (trend + seasonality over ALL history)
+  const lastKey=keyOf(months[months.length-1]);
+  const fc=(n>=2&&lastKey)?forecastModel().fcBill(nextKey(lastKey)):null;
+  const labels=months.map(m=>m.month?MABBR[m.month-1]:m.label).concat(fc!=null?['next (fcst)']:[]);
+  const actual=bill.concat(fc!=null?[null]:[]);
+  const fcData=labels.map((_,i)=>i===n-1?bill[n-1]:(i===n?fc:null));
+  const d=document.getElementById('kpiTrendDelta');
+  if(d&&fc!=null){const delta=r1(fc-bill[n-1]);
+    d.textContent=`${delta>=0?'▲':'▼'} ${Math.abs(delta)}h next mo`;
+    d.style.color=delta>=0?C.green:C.red;}
+  const arrow={id:'kpiArrow',afterDatasetsDraw(chart){
+    const di=fc!=null?1:0;
+    const meta=chart.getDatasetMeta(di),data=chart.data.datasets[di].data;
+    const idx=[];data.forEach((v,i)=>{if(v!=null)idx.push(i);});
+    if(idx.length<2)return;
+    const p1=meta.data[idx[idx.length-2]],p2=meta.data[idx[idx.length-1]];
+    const ang=Math.atan2(p2.y-p1.y,p2.x-p1.x),s=6,ctx=chart.ctx;
+    ctx.save();ctx.translate(p2.x,p2.y);ctx.rotate(ang);
+    ctx.fillStyle=fc!=null?C.blue:C.green;
+    ctx.beginPath();ctx.moveTo(s,0);ctx.lineTo(-s*1.2,-s*0.85);ctx.lineTo(-s*1.2,s*0.85);
+    ctx.closePath();ctx.fill();ctx.restore();}};
+  charts.kpiTrend=new Chart(cv,{type:'line',plugins:[arrow],
+    data:{labels,datasets:[
+      {label:'Billable',data:actual,borderColor:C.green,
+        backgroundColor:'rgba(115,191,105,.12)',fill:true,
+        borderWidth:2,pointRadius:0,pointHitRadius:8,tension:.3},
+      {label:'Forecast',data:fcData,borderColor:C.blue,borderDash:[4,3],
+        borderWidth:2,pointRadius:0,pointHitRadius:8,fill:false},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      layout:{padding:{right:12,top:8,bottom:2}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{title:items=>labels[items[0].dataIndex],
+          label:c=>`${c.dataset.label}: ${(+c.raw).toFixed(0)}h`}}},
+      scales:{x:{display:false},y:{display:false}}}});
+}
+
+const MABBR=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function monthLabelISO(iso){const [y,m]=iso.split('-');return `${MABBR[+m-1]} '${y.slice(2)}`;}
+function monthGroups(mo){
+  const out=[];let cur=null;
+  (mo.days||[]).forEach((d,i)=>{
+    const iso=mo.dates&&mo.dates[i];
+    const key=iso?iso.slice(0,7):'?';
+    const label=iso?monthLabelISO(iso):'';
+    if(!cur||cur.key!==key){cur={key,label,span:0};out.push(cur);}
+    cur.span++;
+  });
+  return out;
+}
+function sizeHeatmap(mo){
+  // scale day cells so the grid fills the panel width (no big empty gap / no overflow)
+  const scroll=document.querySelector('.hm-scroll');
+  if(!scroll)return;
+  const nDays=(mo.days||[]).length||1;
+  const reserve=180+46+(nDays+2)*2+8;        // name col + Σ col + cell-spacing
+  let cell=Math.floor((scroll.clientWidth-reserve)/nDays);
+  cell=Math.max(12,Math.min(cell,30));        // keep compact
+  document.getElementById('heatmap').style.setProperty('--cell',cell+'px');
+}
+function renderHeatmap(mo){
+  const ppl=[...peopleOf(mo)].sort((a,b)=>b.total-a.total);
+  const nHol=(mo.holidayDates||[]).length;
+  document.getElementById('hmHint').textContent=
+    `${mo.label} · ${ppl.length} people · ${mo.days.length} days (${mo.days[0]}–${mo.days[mo.days.length-1]}) · `
+    +`${mo.workdays} working days${nHol?` (excl. ${nHol} holiday${nHol>1?'s':''})`:''}`;
+  const groups=monthGroups(mo);
+  let html='<thead><tr><th></th>';
+  for(const g of groups)
+    html+=`<th colspan="${g.span}" style="color:#d8d9da;border-bottom:1px solid #2a2f37;padding-bottom:3px;">${g.label}</th>`;
+  html+='<th></th></tr><tr><th></th>';
+  for(const d of mo.days)html+=`<th>${d}</th>`;
+  html+='<th>Σ</th></tr></thead><tbody>';
+  for(const p of ppl){
+    html+=`<tr><td class="name" title="${p.name}">${p.name}</td>`;
+    p.daily.forEach((h,i)=>{
+      const iso=(mo.dates&&mo.dates[i])||'';
+      html+=`<td class="cell" style="background:${cellColor(h)}" data-n="${p.name}" data-date="${iso||('day '+mo.days[i])}" data-h="${r1(h)}"></td>`;
+    });
+    html+=`<td class="tot">${r1(p.total)}</td></tr>`;
+  }
+  html+='</tbody>';
+  const tbl=document.getElementById('heatmap');tbl.innerHTML=html;
+  sizeHeatmap(mo);
+  const tip=document.getElementById('tooltip');
+  tbl.querySelectorAll('td.cell').forEach(c=>{
+    c.addEventListener('mousemove',e=>{tip.style.display='block';tip.style.left=(e.clientX+12)+'px';
+      tip.style.top=(e.clientY+12)+'px';tip.innerHTML=`<b>${c.dataset.n}</b><br>${c.dataset.date} · ${c.dataset.h}h`;});
+    c.addEventListener('mouseleave',()=>tip.style.display='none');
+  });
+}
+
+const baseOpts=(extra={})=>({responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{labels:{color:C.text,boxWidth:12,font:{size:13}}}},
+  scales:{x:{grid:{color:C.grid},ticks:{color:C.muted,font:{size:12}}},
+          y:{grid:{color:C.grid},ticks:{color:C.muted,font:{size:13}}}},...extra});
+function destroy(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
+
+// Draws a vertical dashed reference line at options.plugins.normalLine.value (hours).
+const normalLine={id:'normalLine',afterDatasetsDraw(chart,args,opts){
+  const v=opts&&opts.value;
+  if(v==null||!isFinite(v))return;
+  const x=chart.scales.x; if(!x)return;
+  const px=x.getPixelForValue(v);
+  const {top,bottom}=chart.chartArea;
+  const ctx=chart.ctx;
+  ctx.save();
+  ctx.beginPath();ctx.setLineDash([6,4]);ctx.lineWidth=1.5;ctx.strokeStyle='#FADE2A';
+  ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.stroke();
+  ctx.setLineDash([]);ctx.fillStyle='#FADE2A';ctx.font='600 13px Inter';ctx.textAlign='center';
+  ctx.fillText(Math.round(v)+'h',px,top-3);
+  ctx.restore();
+}};
+
+function renderHoursChart(mo){
+  destroy('hours');
+  const ppl=[...peopleOf(mo)].sort((a,b)=>a.total-b.total);
+  document.getElementById('hoursBox').style.height=Math.max(220,ppl.length*30+70)+'px';
+  const billH=ppl.map(p=>p.bill!=null?r1(p.total*p.bill/100):0);
+  const nonH=ppl.map((p,i)=>p.bill!=null?Math.max(r1(p.total-billH[i]),0):0);
+  const uncl=ppl.map((p,i)=>p.bill==null?p.total:0);
+  const normal=(mo.normalHours!=null)?mo.normalHours:mo.workdays*(mo.standardDayHours||8);
+  document.getElementById('hoursMonthHint').textContent=mo.label;
+  charts.hours=new Chart(document.getElementById('hoursChart'),{type:'bar',
+    plugins:[normalLine],
+    data:{labels:ppl.map(p=>p.name),datasets:[
+      {label:'Billable',data:billH,backgroundColor:C.green,borderWidth:0,barThickness:18,stack:'h'},
+      {label:'Non-billable',data:nonH,backgroundColor:C.gray,borderWidth:0,barThickness:18,stack:'h'},
+      {label:'Unclassified',data:uncl,backgroundColor:'#33383f',borderWidth:0,barThickness:18,stack:'h'},
+    ]},
+    options:baseOpts({indexAxis:'y',
+      plugins:{normalLine:{value:normal},
+        legend:{labels:{color:C.text,boxWidth:12,font:{size:13}}},
+        tooltip:{callbacks:{
+          label:ctx=>`${ctx.dataset.label}: ${(+ctx.raw).toFixed(1)}h`,
+          footer:items=>{const t=items.reduce((s,i)=>s+(+i.raw),0);
+            const b=items.find(i=>i.dataset.label==='Billable');
+            const pct=t>0&&b?` (${Math.round(b.raw/t*100)}% billable)`:'';
+            return 'Total: '+t.toFixed(1)+'h'+pct+'  ·  normal '+Math.round(normal)+'h';}}}},
+      scales:{x:{stacked:true,grid:{color:C.grid},ticks:{color:C.muted,font:{size:12}},
+                 title:{display:true,text:'hours',color:C.muted}},
+              y:{stacked:true,grid:{color:C.grid},ticks:{color:C.muted,font:{size:13}}}}})});
+}
+
+function renderTrend(){
+  destroy('trend');
+  // All months of the selected year.
+  const y=yearSel.value;
+  const months=DATA.months.filter(m=>String(m.year||'—')===String(y));
+  const agg=months.map(aggregate);
+  // Each month's bar = normal-hours capacity, split into:
+  //   billable (usage) + non-billable (convertible) + idle (unused capacity).
+  charts.trend=new Chart(document.getElementById('trendChart'),{
+    type:'bar',
+    data:{labels:months.map(m=>m.label),datasets:[
+      {label:'Billable (usage)',data:agg.map(a=>a.billH),
+        backgroundColor:C.green,borderWidth:0,stack:'cap',order:5},
+      {label:'Non-billable (convertible)',data:agg.map(a=>a.nonH),
+        backgroundColor:C.orange,borderWidth:0,stack:'cap',order:5},
+      {label:'Idle capacity',data:agg.map(a=>a.idle),
+        backgroundColor:'rgba(75,81,89,.5)',borderWidth:0,stack:'cap',order:5},
+      {type:'line',label:'Maximum capacity',data:agg.map(a=>a.capacity),stack:'capLine',
+        borderColor:C.red,borderDash:[6,4],borderWidth:2,pointRadius:2,
+        pointBackgroundColor:C.red,fill:false,order:1},
+      {type:'line',label:'Utilization trend',data:linreg(agg.map(a=>a.billH)),stack:'trendLine',
+        borderColor:C.blue,borderDash:[5,4],borderWidth:2,pointRadius:0,
+        fill:false,tension:0,order:0},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:C.text,boxWidth:12,font:{size:13}}},
+        tooltip:{callbacks:{
+          label:ctx=>`${ctx.dataset.label}: ${(+ctx.raw).toFixed(0)}h`,
+          footer:items=>{const a=agg[items[0].dataIndex];
+            const pct=a.capacity>0?Math.round(a.billH/a.capacity*100):0;
+            return `Capacity: ${a.capacity.toFixed(0)}h · billable ${pct}% of capacity`;}}}},
+      scales:{
+        x:{stacked:true,grid:{color:C.grid},ticks:{color:C.muted,font:{size:13}}},
+        y:{stacked:true,beginAtZero:true,grid:{color:C.grid},
+           ticks:{color:C.muted,font:{size:12}},title:{display:true,text:'hours',color:C.muted}},
+      }}});
+}
+
+// ---- Job task analytics ----
+const TASK_PALETTE=['#5794F2','#73BF69','#FF9830','#B877D9','#F2495C','#FADE2A',
+  '#1F9E89','#FF780A','#8AB8FF','#E0529C','#37D67A','#C9A227'];
+// Fixed colour + order per task category, so every person's bar matches.
+const TASK_COLORS={
+  'Implement':'#5794F2',
+  'Corrective Maintenance':'#FF9830',
+  'Preventive Maintenance':'#FADE2A',
+  'Presales':'#B877D9',
+  'Meeting':'#73BF69',
+  'Training':'#1F9E89',
+  'Standby':'#8AB8FF',
+  'Leave':'#E0529C',
+  'Others':'#9aa0a6',
+  'Idle / unused':'rgba(75,81,89,.5)'};
+const TASK_ORDER=['Implement','Corrective Maintenance','Preventive Maintenance','Presales',
+  'Meeting','Training','Standby','Leave','Others'];
+function taskColor(name){return TASK_COLORS[name]||'#6b7077';}
+function teamTaskTotals(mo){
+  const t={};
+  for(const p of peopleOf(mo)){const tk=p.tasks||{};for(const k in tk)t[k]=(t[k]||0)+tk[k];}
+  return t;
+}
+function tasksSorted(mo){            // task names, most hours first
+  const t=teamTaskTotals(mo);
+  return Object.entries(t).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
+}
+function renderTaskTeam(){
+  destroy('taskTeam');
+  // Aggregate across all months of the selected year (sub-team filtered).
+  const y=yearSel.value;
+  const months=DATA.months.filter(m=>String(m.year||'—')===String(y));
+  const hint=document.getElementById('taskTeamHint');
+  if(hint) hint.textContent=`% of team capacity across ${months.length} month(s) of ${y}`;
+  const t={}; let cap=0;
+  for(const mo of months){
+    const ppl=peopleOf(mo);
+    cap+=mo.workdays*(mo.standardDayHours||8)*ppl.length;
+    for(const p of ppl){const tk=p.tasks||{};for(const k in tk)t[k]=(t[k]||0)+tk[k];}
+  }
+  const logged=Object.values(t).reduce((s,v)=>s+v,0);
+  let entries=Object.entries(t);
+  if(cap>logged) entries.push(['Idle / unused',cap-logged]);  // fill to 100%
+  entries.sort((a,b)=>a[1]-b[1]);                              // asc for horizontal bars
+  const box=document.getElementById('taskTeamBox');
+  box.style.height=Math.max(180,entries.length*26+50)+'px';
+  if(!entries.length){return;}
+  const colorFor=name=>taskColor(name);
+  const hours=entries.map(e=>e[1]);
+  const pct=entries.map(e=>cap>0?Math.round(e[1]/cap*1000)/10:0);
+  const pctLabels={id:'pctLabels',afterDatasetsDraw(chart){
+    const m=chart.getDatasetMeta(0),ctx=chart.ctx;
+    ctx.save();ctx.fillStyle=C.text;ctx.font='12px Inter';ctx.textBaseline='middle';
+    m.data.forEach((bar,i)=>ctx.fillText(pct[i].toFixed(1)+'%',bar.x+6,bar.y));
+    ctx.restore();}};
+  charts.taskTeam=new Chart(document.getElementById('taskTeamChart'),{type:'bar',plugins:[pctLabels],
+    data:{labels:entries.map(e=>e[0]),datasets:[{label:'% of capacity',data:pct,
+      backgroundColor:entries.map(e=>colorFor(e[0])),
+      borderWidth:0,barThickness:16}]},
+    options:baseOpts({indexAxis:'y',layout:{padding:{right:40}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:c=>`${hours[c.dataIndex].toFixed(1)}h · ${pct[c.dataIndex].toFixed(1)}% of capacity`}}},
+      scales:{x:{beginAtZero:true,suggestedMax:100,grid:{color:C.grid},
+                 ticks:{color:C.muted,font:{size:12},callback:v=>v+'%'}},
+              y:{grid:{color:C.grid},ticks:{color:C.muted,font:{size:13}}}}})});
+}
+// ---- Per-person radar drill-down ----
+let radarPerson=null;   // name of person currently drilled into, or null
+function exitRadar(){
+  radarPerson=null;
+  destroy('radar');destroy('radarYear');
+  document.getElementById('radarBox').style.display='none';
+  document.getElementById('radarBackBtn').style.display='none';
+  document.getElementById('taskPersonBox').style.display='';
+  document.getElementById('taskMixModeHint').textContent=
+    'hours per task, stacked per person · click a bar to drill down';
+}
+function catsFrom(present){          // task names in fixed order, extras appended
+  return TASK_ORDER.filter(c=>present.has(c))
+    .concat([...present].filter(c=>!TASK_ORDER.includes(c)));
+}
+function makeRadar(canvasId,key,cats,mine,avg,name){
+  destroy(key);
+  const total=mine.reduce((s,v)=>s+v,0);
+  charts[key]=new Chart(document.getElementById(canvasId),{type:'radar',
+    data:{labels:cats,datasets:[
+      {label:name,data:mine,
+        borderColor:C.blue,backgroundColor:'rgba(87,148,242,.25)',
+        pointBackgroundColor:C.blue,borderWidth:2,pointRadius:3},
+      {label:'Team average',data:avg,
+        borderColor:C.muted,backgroundColor:'rgba(142,142,142,.10)',
+        pointBackgroundColor:C.muted,borderWidth:1.5,borderDash:[5,4],pointRadius:2},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:C.text,boxWidth:12,font:{size:13}}},
+        tooltip:{callbacks:{label:c=>{
+          const h=+c.raw, pct=total>0&&c.dataset.label===name?` · ${Math.round(h/total*100)}% of their time`:'';
+          return `${c.dataset.label}: ${h.toFixed(1)}h${pct}`;}}}},
+      scales:{r:{beginAtZero:true,
+        grid:{color:C.grid},angleLines:{color:C.grid},
+        pointLabels:{color:C.text,font:{size:13}},
+        ticks:{color:C.muted,backdropColor:'transparent',font:{size:11},callback:v=>v+'h'}}}}});
+  return total;
+}
+function renderPersonRadar(mo,name){
+  const ppl=peopleOf(mo);
+  const p=ppl.find(x=>x.name===name);
+  if(!p){exitRadar();return;}
+  radarPerson=name;
+  document.getElementById('taskPersonBox').style.display='none';
+  document.getElementById('radarBox').style.display='';
+  document.getElementById('radarBackBtn').style.display='';
+
+  // ---- Left: selected month ----
+  const present=new Set();
+  ppl.forEach(q=>{const tk=q.tasks||{};for(const k in tk)present.add(k);});
+  const cats=catsFrom(present);
+  const mine=cats.map(c=>r1((p.tasks||{})[c]||0));
+  const avg=cats.map(c=>r1(ppl.reduce((s,q)=>s+((q.tasks||{})[c]||0),0)/(ppl.length||1)));
+  const mTotal=makeRadar('radarChart','radar',cats,mine,avg,name);
+  document.getElementById('radarMonthTitle').innerHTML=
+    `${mo.label} <span class="hint">· ${r1(mTotal)}h</span>`;
+
+  // ---- Right: all months of the selected year ----
+  const y=yearSel.value;
+  const months=DATA.months.filter(m=>String(m.year||'—')===String(y));
+  const yPresent=new Set(), yMine={}, yTeam={}, names=new Set();
+  for(const m of months){
+    for(const q of peopleOf(m)){
+      names.add(q.name);
+      const tk=q.tasks||{};
+      for(const k in tk){
+        yPresent.add(k);
+        yTeam[k]=(yTeam[k]||0)+tk[k];
+        if(q.name===name)yMine[k]=(yMine[k]||0)+tk[k];
+      }
+    }
+  }
+  const yCats=catsFrom(yPresent);
+  const yMineArr=yCats.map(c=>r1(yMine[c]||0));
+  const yAvgArr=yCats.map(c=>r1((yTeam[c]||0)/(names.size||1)));
+  const yTotal=makeRadar('radarYearChart','radarYear',yCats,yMineArr,yAvgArr,name);
+  document.getElementById('radarYearTitle').innerHTML=
+    `Full year ${y} <span class="hint">· ${r1(yTotal)}h · ${months.length} month(s)</span>`;
+
+  document.getElementById('taskMixModeHint').textContent=
+    `${name} · vs team average · month and full-year view`;
+}
+function renderTaskPerson(mo){
+  destroy('taskPerson');
+  const ppl=[...peopleOf(mo)].sort((a,b)=>a.total-b.total);   // same order as Total hours by person
+  document.getElementById('taskMixMonthHint').textContent=mo.label;
+  // keep drill-down open across month/team changes if the person still exists
+  if(radarPerson){
+    if(ppl.some(p=>p.name===radarPerson)){renderPersonRadar(mo,radarPerson);}
+    else exitRadar();
+  }
+  const box=document.getElementById('taskPersonBox');
+  box.style.height=Math.max(200,ppl.length*30+70)+'px';
+  if(!ppl.length){return;}
+  const normal=(mo.normalHours!=null)?mo.normalHours:mo.workdays*(mo.standardDayHours||8);
+  // categories present, in the fixed order (same colour for everyone)
+  const present=new Set();
+  ppl.forEach(p=>{const tk=p.tasks||{};for(const k in tk)present.add(k);});
+  const cats=TASK_ORDER.filter(c=>present.has(c))
+    .concat([...present].filter(c=>!TASK_ORDER.includes(c)));
+  const ds=cats.map(task=>({label:task,stack:'t',borderWidth:0,barThickness:18,
+    backgroundColor:taskColor(task),
+    data:ppl.map(p=>r1((p.tasks||{})[task]||0))}));
+  charts.taskPerson=new Chart(document.getElementById('taskPersonChart'),{type:'bar',
+    plugins:[normalLine],
+    data:{labels:ppl.map(p=>p.name),datasets:ds},
+    options:baseOpts({indexAxis:'y',
+      onClick:(e,els,chart)=>{
+        const hit=chart.getElementsAtEventForMode(e,'nearest',{axis:'y',intersect:false},true);
+        if(hit.length)renderPersonRadar(mo,ppl[hit[0].index].name);
+      },
+      onHover:(e,els,chart)=>{
+        const hit=chart.getElementsAtEventForMode(e,'nearest',{axis:'y',intersect:false},true);
+        e.native.target.style.cursor=hit.length?'pointer':'default';
+      },
+      plugins:{normalLine:{value:normal},
+        legend:{labels:{color:C.text,boxWidth:12,font:{size:12}}},
+        tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${(+c.raw).toFixed(1)}h`,
+          footer:()=>'Click to drill into this person'}}},
+      scales:{x:{stacked:true,grid:{color:C.grid},ticks:{color:C.muted,font:{size:12}},
+                 title:{display:true,text:'hours',color:C.muted}},
+              y:{stacked:true,grid:{color:C.grid},ticks:{color:C.muted,font:{size:13}}}}})});
+}
+
+// ---- Load simulator ----
+let SIM={rows:null,fileName:''};
+const pad2=n=>String(n).padStart(2,'0');
+const keyOf=m=>(m.year&&m.month)?m.year+'-'+pad2(m.month):null;
+function nextKey(k){let[y,m]=k.split('-').map(Number);m++;if(m>12){m=1;y++;}return y+'-'+pad2(m);}
+function toMonthKey(v){
+  if(v==null||v==='')return null;
+  if(v instanceof Date&&!isNaN(v))return v.getFullYear()+'-'+pad2(v.getMonth()+1);
+  const s=String(v).trim();
+  let m=s.match(/^(\d{4})[-/.](\d{1,2})$/);if(m)return m[1]+'-'+pad2(+m[2]);
+  m=s.match(/^(\d{1,2})[-/.](\d{4})$/);if(m)return m[2]+'-'+pad2(+m[1]);
+  const mm=MABBR.findIndex(a=>s.toLowerCase().startsWith(a.toLowerCase()));
+  if(mm>=0){const ym=s.match(/(\d{2,4})\s*$/);
+    if(ym){let y=+ym[1];if(y<100)y+=2000;return y+'-'+pad2(mm+1);}}
+  return null;
+}
+function toDateVal(v){
+  if(v==null||v==='')return null;
+  if(v instanceof Date&&!isNaN(v))return v;
+  if(typeof v==='number'){                       // Excel serial date
+    const d=new Date(Math.round((v-25569)*86400000));return isNaN(d)?null:d;}
+  const s=String(v).trim();
+  let m=s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);          // YYYY-MM-DD
+  if(m)return new Date(+m[1],+m[2]-1,+m[3]);
+  m=s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);            // DD/MM/YYYY (day first)
+  if(m){let[,a,b,yy]=m;let d=+a,mo=+b,y=+yy;if(y<100)y+=2000;
+    if(mo>12&&d<=12){const t=d;d=mo;mo=t;}                          // tolerate MM/DD
+    return new Date(y,mo-1,d);}
+  const mk=toMonthKey(s);                                           // 'YYYY-MM', 'Jul 2026'…
+  if(mk){const[y2,m2]=mk.split('-');return new Date(+y2,+m2-1,1);}
+  return null;
+}
+// Spread total hours over months, weighted by overlapping calendar days.
+function allocMonths(start,end,total){
+  if(!end||end<start)end=start;
+  const out={},dayMs=86400000;
+  const totDays=Math.round((end-start)/dayMs)+1;
+  let cur=new Date(start.getFullYear(),start.getMonth(),1);
+  while(cur<=end){
+    const mEnd=new Date(cur.getFullYear(),cur.getMonth()+1,0);
+    const s=start>cur?start:cur, e=end<mEnd?end:mEnd;
+    const days=Math.round((e-s)/dayMs)+1;
+    if(days>0)out[cur.getFullYear()+'-'+pad2(cur.getMonth()+1)]=total*days/totDays;
+    cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);
+  }
+  return out;
+}
+function parseSimSheet(wb){
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const raw=XLSX.utils.sheet_to_json(ws,{defval:''});
+  const rows=[],errs=[];
+  raw.forEach((r,i)=>{
+    const o={};
+    for(const k in r){
+      const nk=String(k).toLowerCase().replace(/[^a-z]/g,'');
+      if(nk==='customer')o.customer=r[k];
+      else if(['projectno','projectnumber','projno'].includes(nk))o.pno=r[k];
+      else if(['projectname','project','taskname','task','name'].includes(nk))o.pname=r[k];
+      else if(['startdate','startmonth','start','from'].includes(nk))o.start=r[k];
+      else if(['enddate','endmonth','end','to'].includes(nk))o.end=r[k];
+      else if(['manday','mandays','mday','mdays','days','numberofday','numberofdays','effortdays'].includes(nk))o.mandays=r[k];
+      else if(['hours','totalhours','hourstotal','hourstotalforthisproject','effort'].includes(nk))o.hours=r[k];
+      else if(['engineername','engineer','assignee','owner','person'].includes(nk))o.eng=String(r[k]).trim();
+    }
+    const start=toDateVal(o.start),end=toDateVal(o.end);
+    const md=parseFloat(o.mandays);
+    const h=!isNaN(md)?md*8:parseFloat(o.hours);   // 1 man-day = 8 hours; Hours column still accepted
+    const label=[o.customer,o.pname||o.pno].filter(Boolean).join(' – ');
+    if(!label&&!start&&isNaN(h))return;            // skip blank rows
+    if(!start||isNaN(h)||h<0){errs.push('row '+(i+2));return;}
+    // Engineer Name may list several names (comma / ; / & / newline):
+    // split the project's man-days equally between them.
+    const engs=(o.eng||'').split(/[,;&/\n]+/).map(s=>s.trim()).filter(Boolean);
+    const share=engs.length>1?h/engs.length:h;
+    (engs.length?engs:['']).forEach(eng=>{
+      rows.push({task:label||('Project '+(i+1)),eng,hours:share,
+        alloc:allocMonths(start,end,share)});
+    });
+  });
+  return{rows,errs};
+}
+function engTeamMap(){                 // engineer name (lowercase) → sub team
+  const m={};
+  for(const mo of DATA.months)
+    for(const p of mo.people){const k=p.name.toLowerCase().trim();if(!(k in m))m[k]=p.team;}
+  return m;
+}
+let ENGMAP={};
+// Working days in the 26→25 billing period ending on the 25th of `key`'s month
+// (Mon–Fri minus the holiday calendar) — same definition the server uses.
+function workdaysForKey(key){
+  const[y,m]=key.split('-').map(Number);
+  const hol=new Set(DATA.holidays||[]);
+  const start=new Date(y,m-2,26),end=new Date(y,m-1,25);
+  let n=0;
+  for(const d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
+    const dw=d.getDay();
+    if(dw===0||dw===6)continue;
+    if(hol.has(d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())))continue;
+    n++;
+  }
+  return n;
+}
+let SIMSHARE=1;   // selected sub team's share of total headcount (set in renderSim)
+let IMPPCT=0.5;   // share of historical Implement work expected to repeat
+// ---- Shared forecast model, built from ALL history (every year of data) ----
+// 1) normalize to hours per working day (removes month-length noise)
+// 2) linear trend over the whole history (gaps handled via month index)
+// 3) monthly seasonal index = avg deviation from trend per calendar month,
+//    averaged across years, clamped to 0.5–1.5
+// 4) forecast(key) = trend × seasonal × real workdays of that month
+function forecastModel(){
+  const histAll=DATA.months.filter(m=>keyOf(m));
+  const histKeys=histAll.map(keyOf);
+  const histAgg=histAll.map(aggregate);              // respects sub-team filter
+  const histWd=histAll.map((m,i)=>m.workdays||workdaysForKey(histKeys[i])||21);
+  const absIdx=kk=>{const[yy,mm]=kk.split('-').map(Number);return yy*12+mm;};
+  const base0=histKeys.length?absIdx(histKeys[0]):0;
+  const xs=histKeys.map(kk=>absIdx(kk)-base0);
+  const mkModel=vals=>{                              // vals = hours per workday
+    const n=vals.length;
+    let f=()=>n?Math.max(vals[n-1],0):0;
+    if(n>=2){
+      // recency-weighted least squares: each month back in time counts ×0.9
+      // (≈ half-life 6–7 months) so recent shifts dominate the trend
+      const maxX=xs[n-1];
+      let sw=0,sx=0,sy=0,sxx=0,sxy=0;
+      vals.forEach((v,i)=>{const x=xs[i],w=Math.pow(0.9,maxX-x);
+        sw+=w;sx+=w*x;sy+=w*v;sxx+=w*x*x;sxy+=w*x*v;});
+      const b=(sw*sxy-sx*sy)/(sw*sxx-sx*sx||1),a0=(sy-b*sx)/sw;
+      f=x=>a0+b*x;}
+    const sSum={},sCnt={};
+    vals.forEach((v,i)=>{const mm=+histKeys[i].split('-')[1],t=f(xs[i]);
+      if(t>1e-6){sSum[mm]=(sSum[mm]||0)+v/t;sCnt[mm]=(sCnt[mm]||0)+1;}});
+    const seas=mm=>{const s=sCnt[mm]?sSum[mm]/sCnt[mm]:1;
+      return Math.min(1.5,Math.max(0.5,s));};
+    return kk=>{const[yy,mm]=kk.split('-').map(Number);
+      const pw=Math.max(f(yy*12+mm-base0)*seas(mm),0);
+      return r1(pw*workdaysForKey(kk));};
+  };
+  // Billable forecast by task nature:
+  //   CMA + PMA  = recurring maintenance → full trend carries forward
+  //   IMP        = implementation projects that FINISH → only IMPPCT carries
+  //   (other billable tasks, e.g. standby, follow their own trend fully)
+  const sumTasks=(mo,names)=>{let s=0;
+    for(const p of peopleOf(mo)){const tk=p.tasks||{};
+      for(const nm of names)s+=tk[nm]||0;}
+    return s;};
+  const REC_TASKS=['Corrective Maintenance','Preventive Maintenance'];
+  const recSeries=histAll.map((m,i)=>sumTasks(m,REC_TASKS)/(histWd[i]||1));
+  const impSeries=histAll.map((m,i)=>sumTasks(m,['Implement'])/(histWd[i]||1));
+  const hasTasks=recSeries.some(v=>v>0)||impSeries.some(v=>v>0);
+  // residual billable beyond CMA/PMA/IMP (kept so totals still reconcile)
+  const otherSeries=histAll.map((m,i)=>{
+    const ot=(histAgg[i].billH-sumTasks(m,REC_TASKS.concat(['Implement'])))/(histWd[i]||1);
+    return Math.max(ot,0);});
+  let fcBill,fcNon;
+  const presales=(teamFilter==='Presales');
+  if(presales){
+    // Presales staff: maintenance/implementation task logic doesn't apply.
+    // Forecast their billable AND non-billable directly from the Presales
+    // team's own full history (trend + seasonality each).
+    fcBill=mkModel(histAgg.map((a,i)=>a.billH/(histWd[i]||1)));
+    fcNon=mkModel(histAgg.map((a,i)=>a.nonH/(histWd[i]||1)));
+  }else if(hasTasks){
+    const fcRec=mkModel(recSeries),fcImp=mkModel(impSeries),fcOth=mkModel(otherSeries);
+    fcBill=kk=>r1(fcRec(kk)+IMPPCT*fcImp(kk)+fcOth(kk));
+  }else{                                            // no task data → old model
+    fcBill=mkModel(histAgg.map((a,i)=>a.billH/(histWd[i]||1)));
+  }
+  if(!fcNon){
+    // Total logged time is stable (people's working time): non-billable is the
+    // remainder. IMP hours that do NOT carry forward therefore land in
+    // non-billable — freed capacity that simulated new load consumes first.
+    const fcTot=mkModel(histAgg.map((a,i)=>(a.billH+a.nonH)/(histWd[i]||1)));
+    fcNon=kk=>Math.max(r1(fcTot(kk)-fcBill(kk)),0);
+  }
+  // real numbers for months that already have data
+  const histMap={};histKeys.forEach((kk,i)=>histMap[kk]={bill:histAgg[i].billH,non:histAgg[i].nonH});
+  return{histKeys,fcBill,fcNon,histMap,presales};
+}
+function simHoursAt(key){
+  let s=0;
+  for(const r of SIM.rows){
+    const h=r.alloc[key]||0;
+    if(!h)continue;
+    if(teamFilter==='All'){s+=h;continue;}
+    const t=r.eng?ENGMAP[r.eng.toLowerCase()]:null;
+    if(t===teamFilter)s+=h;            // assigned to this sub team → full share
+    else if(t)continue;                // assigned to another sub team → excluded
+    else s+=h*SIMSHARE;                // blank/unknown engineer → whole-team load,
+  }                                    //   prorated by this sub team's headcount share
+  return s;
+}
+function renderSim(){
+  const panel=document.getElementById('simPanel');
+  if(!SIM.rows||!SIM.rows.length){panel.style.display='none';destroy('sim');return;}
+  panel.style.display='';
+  destroy('sim');
+  const y=yearSel.value;
+  const months=DATA.months.filter(m=>String(m.year||'—')===String(y)&&keyOf(m));
+  const sumEl=document.getElementById('simSummary');
+  if(!months.length){sumEl.innerHTML='<span class="muted">No data months in selected year.</span>';return;}
+  const agg=months.map(aggregate);
+  const keys=months.map(keyOf);
+  const bills=agg.map(a=>r1(a.billH));    // baseline split: billable
+  const nons=agg.map(a=>r1(a.nonH));      //                  + non-billable
+  const caps=agg.map(a=>a.capacity);
+  // Future capacity: real workdays of each 26→25 period (minus holidays)
+  // × standard day hours × headcount of the LATEST data month — so a recent
+  // change in team size carries forward.
+  const lastMo=months[months.length-1];
+  const nLatest=peopleOf(lastMo).length;
+  const sdh=lastMo.standardDayHours||8;
+  SIMSHARE=teamFilter==='All'?1:(lastMo.people.length?nLatest/lastMo.people.length:1);
+  ENGMAP=engTeamMap();
+  // extend the timeline to cover the simulated months, but forecast at most
+  // 12 months beyond the last data month (one year horizon)
+  let maxSim=keys[keys.length-1];
+  for(const r of SIM.rows)for(const kk in r.alloc)if(kk>maxSim)maxSim=kk;
+  const allKeys=[...keys];let k=keys[keys.length-1],added=0;
+  while(k<maxSim&&added<12){k=nextKey(k);allKeys.push(k);added++;}
+  const truncated=k<maxSim;   // sim load continues past the 1-year horizon
+  const nData=keys.length;
+  const M=forecastModel();                           // trend+seasonal, all history
+  const histKeys=M.histKeys;
+  const NON_CAP=0.10;   // forecast non-billable reserved at exactly 10% of capacity
+                        // (minimum overhead every month, never more either —
+                        //  even if the billable forecast would consume it)
+  const billAt=i=>i<nData?bills[i]:(M.histMap[allKeys[i]]?r1(M.histMap[allKeys[i]].bill):M.fcBill(allKeys[i]));
+  const nonAt=i=>i<nData?nons[i]:(M.histMap[allKeys[i]]?r1(M.histMap[allKeys[i]].non)
+    :(M.presales?M.fcNon(allKeys[i]):r1(capAt(i)*NON_CAP)));
+  const baseAt=i=>r1(billAt(i)+nonAt(i));
+  const capAt=i=>i<nData?r1(caps[i]):r1(workdaysForKey(allKeys[i])*sdh*nLatest);
+  const sim=allKeys.map(kk=>r1(simHoursAt(kk)));
+  // Overload rule: billable work (current billable + new load) above 90% of capacity
+  const OVER_T=0.90;
+  const billLoad=i=>r1(billAt(i)+sim[i]);
+  const overload=allKeys.map((kk,i)=>billLoad(i)>capAt(i)*OVER_T);
+  // New load is absorbed from non-billable time first in ACTUAL months
+  // (real logged slack can convert to project work). In forecast months the
+  // 10% non-billable reserve is protected — new load does not consume it.
+  const isFc=i=>i>=nData&&!M.histMap[allKeys[i]];
+  const nonAdj=i=>isFc(i)?nonAt(i):Math.max(r1(nonAt(i)-sim[i]),0);
+  const labels=allKeys.map(kk=>{const[yy,mm]=kk.split('-');return MABBR[+mm-1]+" '"+yy.slice(2);});
+  const nProj=new Set(SIM.rows.map(r=>r.task)).size;
+  document.getElementById('simHint').textContent=
+    `${SIM.fileName} · ${nProj} project(s) · baseline = billable + non-billable · man-days split equally between listed engineers, prorated by days per month · forecast beyond ${labels[nData-1]} = ${M.presales?'Presales own history (bill & non-bill trends)':`CMA+PMA trend + ${Math.round(IMPPCT*100)}% of IMP`} + seasonal pattern from all ${histKeys.length} data months, scaled by workdays (max 1 year)${M.presales?'':` · non-bill forecast reserved at ${Math.round(NON_CAP*100)}% of capacity`} · future capacity = workdays (excl. holidays) × ${sdh}h × ${nLatest} people`
+    +(truncated?` · ⚠ some load extends beyond ${labels[labels.length-1]||''} and is not shown`:'');
+  charts.sim=new Chart(document.getElementById('simChart'),{type:'bar',
+    data:{labels,datasets:[
+      {label:'Billable',data:allKeys.map((_,i)=>i<nData?bills[i]:null),
+        backgroundColor:C.green,stack:'s',borderWidth:0,order:5},
+      {label:'Billable (forecast)',data:allKeys.map((_,i)=>i>=nData?billAt(i):null),
+        backgroundColor:'rgba(115,191,105,.45)',stack:'s',borderWidth:0,order:5},
+      {label:'New load (simulated)',data:sim,stack:'s',borderWidth:0,order:5,
+        backgroundColor:sim.map((_,i)=>overload[i]?C.red:C.orange)},
+      {label:'Non-billable',data:allKeys.map((_,i)=>i<nData?nonAdj(i):null),
+        backgroundColor:C.gray,stack:'s',borderWidth:0,order:5},
+      {label:'Non-billable (forecast)',data:allKeys.map((_,i)=>i>=nData?nonAdj(i):null),
+        backgroundColor:'rgba(75,81,89,.45)',stack:'s',borderWidth:0,order:5},
+      {type:'line',label:'Capacity',data:allKeys.map((_,i)=>capAt(i)),stack:'capLine',
+        borderColor:'#FADE2A',borderDash:[6,4],borderWidth:2,pointRadius:2,
+        pointBackgroundColor:'#FADE2A',fill:false,order:1},
+      {type:'line',label:`${Math.round(OVER_T*100)}% billable limit`,data:allKeys.map((_,i)=>r1(capAt(i)*OVER_T)),
+        stack:'limitLine',borderColor:C.red,borderDash:[4,3],borderWidth:1.5,pointRadius:0,
+        fill:false,order:0},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:C.text,boxWidth:12,font:{size:13}}},
+        tooltip:{callbacks:{
+          label:c=>`${c.dataset.label}: ${(+c.raw).toFixed(0)}h`,
+          footer:items=>{const i=items[0].dataIndex;
+            const tot=r1(billAt(i)+sim[i]+nonAdj(i)),cap=capAt(i),bl=billLoad(i);
+            const u=cap>0?Math.round(tot/cap*100):0;
+            const bp=cap>0?Math.round(bl/cap*100):0;
+            return `Total: ${tot.toFixed(0)}h / ${cap.toFixed(0)}h capacity = ${u}%`
+              +`\nBillable + new load: ${bl.toFixed(0)}h = ${bp}% of capacity (limit ${Math.round(OVER_T*100)}%)`
+              +(overload[i]?'  ⚠ OVERLOAD':'');}}}},
+      scales:{x:{stacked:true,grid:{color:C.grid},ticks:{color:C.muted,font:{size:12}}},
+              y:{stacked:true,beginAtZero:true,grid:{color:C.grid},
+                 ticks:{color:C.muted,font:{size:12}},
+                 title:{display:true,text:'hours',color:C.muted}}}}});
+  const over=allKeys.map((kk,i)=>({kk,i})).filter(x=>overload[x.i]);
+  if(over.length){
+    const excess=x=>billLoad(x.i)-capAt(x.i)*OVER_T;
+    const tPct=Math.round(OVER_T*100);
+    sumEl.innerHTML=`<span style="color:${C.red};font-weight:600;">⚠ Overload (billable &gt; ${tPct}% of capacity) in ${over.length} month(s):</span> `
+      +over.map(x=>`${labels[x.i]} (+${r1(excess(x))}h over the ${tPct}% limit)`).join(' · ')
+      +`<br><span class="muted">Options: shift start months, reduce man-days, or add ${
+        Math.ceil(Math.max(...over.map(excess))/(sdh*21*OVER_T))
+      } more person(s) in peak months.</span>`;
+  }else{
+    sumEl.innerHTML=`<span style="color:${C.green};font-weight:600;">✓ The team can absorb this load.</span> `
+      +`<span class="muted">Billable work stays within ${Math.round(OVER_T*100)}% of capacity in every month.</span>`;
+  }
+}
+async function loadSimFile(file){
+  try{
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(new Uint8Array(buf),{type:'array',cellDates:true});
+    const{rows,errs}=parseSimSheet(wb);
+    if(!rows.length){alert('No valid rows found. Required columns: Customer, ProjectNo, ProjectName, Start Date, End Date, Man-day (1 = 8h), Engineer Name.\nMinimum per row: Start Date + Man-day.'+(errs.length?'\nSkipped: '+errs.join(', '):''));return;}
+    SIM={rows,fileName:file.name};
+    renderSim();
+    document.getElementById('simPanel').scrollIntoView({behavior:'smooth'});
+    if(errs.length)console.warn('Simulator skipped invalid rows:',errs);
+  }catch(e){alert('Could not read file: '+e.message);}
+}
+
+function renderMonth(idx){
+  const mo=DATA.months[idx];
+  if(!mo)return;
+  renderKPIs(mo);renderHeatmap(mo);renderHoursChart(mo);renderTaskPerson(mo);
+}
+function renderAll(){renderMonth(+document.getElementById('monthSel').value);renderTrend();renderTaskTeam();renderSim();}
+
+const yearSel=document.getElementById('yearSel');
+const monthSel=document.getElementById('monthSel');
+
+function buildYearOptions(){
+  const years=[...new Set(DATA.months.map(m=>String(m.year||'—')))].sort();
+  yearSel.innerHTML=years.map(y=>`<option value="${y}">${y}</option>`).join('');
+  yearSel.value=years[years.length-1];          // newest year
+}
+function buildMonthOptions(){
+  const y=yearSel.value;
+  const items=DATA.months.map((m,i)=>({m,i})).filter(x=>String(x.m.year||'—')===y);
+  monthSel.innerHTML=items.map(x=>
+    `<option value="${x.i}">${x.m.month?MABBR[x.m.month-1]:x.m.label}</option>`).join('');
+  monthSel.value=items.length?items[items.length-1].i:'';   // newest month in year
+}
+
+async function init(refresh){
+  const err=document.getElementById('error');err.innerHTML='';
+  try{
+    DATA=await fetchData(refresh);
+    document.getElementById('modeBadge').textContent=DATA.mode==='onedrive'?'OneDrive · live':'local data';
+    if(!DATA.months.length){err.innerHTML='<div class="err">No data files found.</div>';return;}
+    const ts=document.getElementById('teamSel');
+    ts.innerHTML=['All',...(DATA.subteams||[])].map(t=>`<option value="${t}">${t}</option>`).join('');
+    ts.value=teamFilter='All';
+    buildYearOptions();
+    buildMonthOptions();
+    renderAll();
+  }catch(e){
+    err.innerHTML=`<div class="err"><b>Could not load data.</b><br>${e.message}</div>`;
+  }
+}
+
+document.getElementById('teamSel').addEventListener('change',e=>{teamFilter=e.target.value;renderAll();});
+yearSel.addEventListener('change',()=>{buildMonthOptions();renderAll();});
+monthSel.addEventListener('change',()=>renderAll());
+document.getElementById('reloadBtn').addEventListener('click',()=>init(true));
+document.getElementById('radarBackBtn').addEventListener('click',exitRadar);
+document.getElementById('simBtn').addEventListener('click',()=>document.getElementById('simFile').click());
+document.getElementById('simFile').addEventListener('change',e=>{
+  if(e.target.files.length)loadSimFile(e.target.files[0]);
+  e.target.value='';   // allow re-uploading the same file
+});
+document.getElementById('simClearBtn').addEventListener('click',()=>{SIM={rows:null,fileName:''};renderSim();});
+document.getElementById('impPct').addEventListener('change',e=>{
+  let v=parseFloat(e.target.value);
+  if(isNaN(v))v=50; v=Math.min(100,Math.max(0,v));
+  e.target.value=v; IMPPCT=v/100;
+  renderAll();   // forecasts (sparkline + simulator) use IMPPCT
+});
+let _rt=null;
+window.addEventListener('resize',()=>{clearTimeout(_rt);_rt=setTimeout(()=>{
+  if(DATA&&monthSel.value!=='')renderMonth(+monthSel.value);},150);});
+init(false);
+</script>
+</body>
+</html>

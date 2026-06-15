@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+token.json
+*.md
+sample_data/
+.git/

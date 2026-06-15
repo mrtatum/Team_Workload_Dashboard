@@ -1,0 +1,12 @@
+User Name,Workingdate,Effort,Project Code,Job task,Customer
+Alice Tan,2025-05-27,8,PRJ100,PMA-routine,Acme
+Alice Tan,2025-05-28,8,PRJ100,CMA fix,Acme
+Alice Tan,2025-06-02,8,PRJ100,Implementation IMP,Acme
+Alice Tan,2025-06-03,8,MFE-INTERNAL,Meeting/ Admin/ Support,Internal
+Bob Lee,2025-05-27,8,PRJ200,CMA fix,Globex
+Bob Lee,2025-06-02,8,PRJ200,PMA-routine,Globex
+Bob Lee,2025-06-03,4,MFE-STANDBY,Standby,Internal
+Bob Lee,2025-06-03,4,PRJ201,Training session,Globex
+Carol Ng,2025-05-28,8,PRJ300,Presales scoping,Initech
+Carol Ng,2025-06-02,8,PRJ300,"Dev,Imp,MA,WA",Initech
+Carol Ng,2025-06-04,8,PRJ301,Annual Leave,Initech
