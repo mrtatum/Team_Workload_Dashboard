@@ -1,18 +1,136 @@
-name: Docker Image CI
+name: Build and publish image
+
+# Builds the dashboard image and pushes it to GitHub Container Registry (GHCR).
+# Everything happens on GitHub's runners — nothing is built on your laptop.
+#
+#   Actions -> "Build and publish image" -> Run workflow   (manual, pick a tag)
+#   push to main                                           -> :latest
+#   push a tag like v1.1.0                                 -> :v1.1.0 and :latest
+#
+# No secrets to configure: GITHUB_TOKEN is created automatically for each run,
+# and `packages: write` below is the only permission it needs.
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to publish, e.g. v1.1.0 (blank = :latest only)'
+        required: false
+        default: ''
+      platforms:
+        description: 'Architectures to build'
+        required: true
+        default: 'linux/amd64,linux/arm64'
+        type: choice
+        options:
+          - 'linux/amd64,linux/arm64'
+          - 'linux/amd64'
+          - 'linux/arm64'
+      update_latest:
+        description: 'Also move the :latest tag'
+        required: false
+        default: true
+        type: boolean
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: ['main']
+    tags: ['v*']
+
+env:
+  IMAGE_NAME: team-workload-dashboard
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # QEMU lets this amd64 runner also emit an arm64 layer.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          # GHCR rejects capitals; owners can legitimately contain them.
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/${IMAGE_NAME}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+
+          TAGS="${IMAGE}:sha-${SHORT_SHA}"          # always present, immutable
+          add() { TAGS="${TAGS},${IMAGE}:$1"; }
+
+          # Manual run with a version typed into the form.
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            add "${{ github.event.inputs.tag }}"
+          fi
+          # Pushing a git tag (v1.1.0) publishes that same version.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            add "${{ github.ref_name }}"
+          fi
+          # :latest unless the manual form explicitly unticked it.
+          if [ "${{ github.event.inputs.update_latest }}" != "false" ]; then
+            add latest
+          fi
+
+          echo "image=${IMAGE}"               >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"                 >> "$GITHUB_OUTPUT"
+          echo "smoke=${IMAGE}:sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Publishing:"; echo "${TAGS}" | tr ',' '\n' | sed 's/^/  /'
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Pull the image we just published and prove it actually serves traffic.
+      # LOCAL_DATA_DIR points at an empty folder, so no OneDrive credentials are
+      # ever needed in CI — /api/health does not touch the data source.
+      - name: Smoke-test the published image
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -e LOCAL_DATA_DIR=/tmp/empty \
+            -p 8501:8501 "${{ steps.tags.outputs.smoke }}"
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8501/api/health -o health.json; then break; fi
+            sleep 2
+          done
+          echo "health: $(cat health.json)"
+          grep -q '"status": *"ok"' health.json
+          docker rm -f smoke
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image published"
+            echo ''
+            echo '```'
+            echo "${{ steps.tags.outputs.tags }}" | tr ',' '\n'
+            echo '```'
+            echo 'Pull and run it with:'
+            echo '```bash'
+            echo "docker pull ${{ steps.tags.outputs.image }}:latest"
+            echo "docker run -d --env-file .env -p 8501:8501 ${{ steps.tags.outputs.image }}:latest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
