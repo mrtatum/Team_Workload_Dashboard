@@ -3,12 +3,18 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PORT=8501
 
+# Attaches the GHCR package to the repo, so it shows under Packages there and
+# inherits the repo's visibility instead of landing as an orphan private image.
+LABEL org.opencontainers.image.source=https://github.com/mrtatum/Team_Workload_Dashboard
+
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY server.py onedrive_source.py holidays.txt ./
+# diagnose.py ships too, so the parser can be inspected inside the running
+# container:  docker compose exec team-dashboard python diagnose.py --tree
+COPY server.py onedrive_source.py diagnose.py holidays.txt ./
 COPY static ./static
 
 RUN useradd -m appuser && chown -R appuser /app
