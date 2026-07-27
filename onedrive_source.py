@@ -55,7 +55,13 @@ class OneDriveSource:
                 client_id = client_id or data.get("client_id", "")
                 tenant_id = data.get("tenant_id", tenant_id)
                 refresh_token = refresh_token or data.get("refresh_token", "")
-                self.scopes = data.get("scope", self.scopes)
+                # Azure AD does not echo offline_access back in `scope`, so
+                # replaying it verbatim asks for a token with no refresh — the
+                # chain then dies at the next rotation. Put it back.
+                scope = data.get("scope", self.scopes)
+                if "offline_access" not in scope.split():
+                    scope = "offline_access " + scope
+                self.scopes = scope
 
         if not client_id or not refresh_token:
             raise OneDriveError(

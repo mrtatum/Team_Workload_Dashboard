@@ -28,7 +28,9 @@ import io
 import math
 import os
 import re
+import sys
 import time
+import warnings
 
 import pandas as pd
 from flask import Flask, jsonify, request, send_from_directory
@@ -37,7 +39,7 @@ from onedrive_source import OneDriveError, OneDriveSource
 
 app = Flask(__name__, static_folder="static")
 
-VERSION = "2026-06-08-taskgroup"
+VERSION = "2026-07-27-parsefixes"
 CACHE_TTL = int(os.environ.get("CACHE_TTL_SECONDS", "300"))
 STANDARD_DAY_HOURS = float(os.environ.get("STANDARD_DAY_HOURS", "8"))
 HOLIDAYS_FILE = os.environ.get("HOLIDAYS_FILE", "holidays.txt")
@@ -230,24 +232,101 @@ def _period_dates(year, month):
 NONBILL_PREFIX = os.environ.get("NONBILL_PROJECT_PREFIX", "MFE").strip().upper()
 
 
-def _find_col(cols, patterns):
-    low = {c: str(c).strip().lower().replace(" ", "") for c in cols}
-    for c in cols:
-        for p in patterns:
-            if p in low[c]:
-                return c
-    return None
+_EXACT, _PREFIX, _CONTAINS = 0, 1, 2
+
+
+def _norm_col(c):
+    """Column name reduced to letters+digits: 'Project_Code ' -> 'projectcode'."""
+    return re.sub(r"[^a-z0-9]", "", str(c).strip().lower())
+
+
+def _find_col(cols, patterns, exclude=()):
+    """
+    Pick the best column for a role. `patterns` are in priority order.
+
+    Ranking is (pattern priority, match quality, position) — an exact match
+    beats a prefix match beats a substring match, and only then does the
+    left-most column win. The old version returned the first column that merely
+    *contained* any keyword, so a sheet with 'Customer Name' or 'Project Name'
+    to the left of 'User Name' / 'Project Code' silently mapped people onto
+    customers and made every project look billable.
+    """
+    best, best_key = None, None
+    for pos, c in enumerate(cols):
+        if c in exclude:
+            continue
+        n = _norm_col(c)
+        if not n:
+            continue
+        for pi, p in enumerate(patterns):
+            p = _norm_col(p)
+            if not p:
+                continue
+            if n == p:
+                q = _EXACT
+            elif n.startswith(p):
+                q = _PREFIX
+            elif p in n:
+                q = _CONTAINS
+            else:
+                continue
+            key = (pi, q, pos)
+            if best_key is None or key < best_key:
+                best, best_key = c, key
+            break                      # highest-priority pattern for this column
+    return best
 
 
 def _valid_name(v):
     return v is not None and str(v).strip() != "" and str(v).strip().lower() != "nan"
 
 
-def _parse_dates_series(series):
-    dts = pd.to_datetime(series, errors="coerce")
-    if dts.isna().mean() > 0.5:                 # retry day-first (e.g. 13/04/2026)
-        dts = pd.to_datetime(series, errors="coerce", dayfirst=True)
-    return dts
+# DATE_DAYFIRST: "1"/"0" forces day-first / month-first parsing. Unset = auto.
+_DAYFIRST_ENV = os.environ.get("DATE_DAYFIRST", "").strip().lower()
+DATE_DAYFIRST = {"1": True, "true": True, "yes": True,
+                 "0": False, "false": False, "no": False}.get(_DAYFIRST_ENV)
+
+
+def _parse_dates_series(series, warn=None, where=""):
+    """
+    Parse a date column, picking the interpretation that loses fewer rows.
+
+    The old rule only retried day-first when MORE than half the rows failed, so
+    a dd/mm/yyyy export sat right on the boundary: rows with day > 12 became
+    NaT and were dropped, and the rest (e.g. 02/06 -> 6 Feb) landed in the wrong
+    month. Set DATE_DAYFIRST to override the automatic choice.
+    """
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="coerce")   # real Excel dates: no ambiguity
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        mfirst = pd.to_datetime(series, errors="coerce")
+        dfirst = pd.to_datetime(series, errors="coerce", dayfirst=True)
+
+    if DATE_DAYFIRST is not None:
+        return dfirst if DATE_DAYFIRST else mfirst
+
+    n_m, n_d = int(mfirst.notna().sum()), int(dfirst.notna().sum())
+    if n_d != n_m:
+        return dfirst if n_d > n_m else mfirst
+
+    # Both parse the same number of rows. Year-first values (2025-06-02) are
+    # unambiguous whatever pandas' dayfirst inference does with them.
+    txt = series.astype(str).str.strip()
+    txt = txt[txt.str.lower().isin(("", "nan", "none")) == False]  # noqa: E712
+    if len(txt) and txt.str.match(r"^\d{4}[-/.]").mean() > 0.5:
+        return mfirst
+
+    # Otherwise, if the two readings disagree the column is genuinely ambiguous
+    # (every day/month part <= 12) — keep the historical month-first reading but
+    # say so.
+    if warn is not None and n_m and not mfirst.equals(dfirst):
+        warn.append(
+            f"{where}: date column is ambiguous (every value fits both dd/mm and "
+            f"mm/dd). Read as month-first; set DATE_DAYFIRST=1 if it should be "
+            f"day-first.")
+    return mfirst
 
 
 def period_of(d):
@@ -261,17 +340,34 @@ def period_of(d):
     return (d.year, d.month)
 
 
+def _nonblank(series):
+    s = series.astype(str).str.strip().str.lower()
+    return series.notna() & (s != "") & (s != "nan") & (s != "none")
+
+
 def extract_long_entries(df, user_col, date_col, effort_col, proj_col, task_col=None,
-                         cust_col=None):
+                         cust_col=None, warn=None, where=""):
     """
     Flatten a long/transactional sheet into rows: (name, date, eff, billable,
     task, proj, cust). Vectorized + coercion-safe: bad effort -> 0, bad date ->
     NaT (dropped). A project code starting with NONBILL_PREFIX (default 'MFE')
     is non-billable.
+
+    Coercion is no longer silent: anything dropped or zeroed is appended to
+    `warn` so the totals can be reconciled against the source workbook.
     """
     df = df.reset_index(drop=True)
-    dates = _parse_dates_series(df[date_col]).dt.date
-    effort = pd.to_numeric(df[effort_col], errors="coerce").fillna(0.0)
+
+    raw_eff = df[effort_col]
+    effort = pd.to_numeric(raw_eff, errors="coerce")
+    bad_eff = int((effort.isna() & _nonblank(raw_eff)).sum())
+    effort = effort.fillna(0.0)
+
+    raw_dates = df[date_col]
+    parsed = _parse_dates_series(raw_dates, warn=warn, where=where)
+    bad_dates = int((parsed.isna() & _nonblank(raw_dates)).sum())
+    dates = parsed.dt.date
+
     names = df[user_col].astype(str).str.strip()
     if proj_col is not None:
         proj = df[proj_col].astype(str).str.strip().str.upper()
@@ -291,9 +387,34 @@ def extract_long_entries(df, user_col, date_col, effort_col, proj_col, task_col=
     work = pd.DataFrame({"name": names, "date": dates, "eff": effort,
                          "bill": billable.values, "task": task.values,
                          "proj": proj.values, "cust": cust.values})
+    hours_in = float(effort.sum())
+    rows_in = len(work)
+
     nm_l = work["name"].str.lower()
-    work = work[(work["name"] != "") & (nm_l != "nan") & (~nm_l.isin(EXCLUDE_NAMES))]
+    keep_name = (work["name"] != "") & (nm_l != "nan")
+    excluded = int((keep_name & nm_l.isin(EXCLUDE_NAMES)).sum())
+    bad_names = int((~keep_name).sum())
+    work = work[keep_name & (~nm_l.isin(EXCLUDE_NAMES))]
     work = work[work["date"].notna()]
+
+    if warn is not None:
+        hours_out = float(work["eff"].sum())
+        lost = round(hours_in - hours_out, 2)
+        bits = []
+        if bad_dates:
+            bits.append(f"{bad_dates} row(s) with an unreadable date")
+        if bad_names:
+            bits.append(f"{bad_names} row(s) with no user name")
+        if excluded:
+            bits.append(f"{excluded} row(s) excluded by EXCLUDE_NAMES")
+        if bad_eff:
+            bits.append(f"{bad_eff} non-numeric Effort cell(s) counted as 0")
+        if bits or abs(lost) > 0.05:
+            warn.append(
+                f"{where}: kept {len(work)}/{rows_in} rows, "
+                f"{round(hours_out, 1)}/{round(hours_in, 1)} hours"
+                + (f" ({lost:+.1f}h vs the sheet)" if abs(lost) > 0.05 else "")
+                + (" — " + "; ".join(bits) if bits else ""))
     return work
 
 
@@ -433,57 +554,113 @@ def _read_excel_sheets(raw, low):
     raise last
 
 
-def read_dataframe(name, raw):
+def _table_from(rdf):
+    """A header=None sheet -> (header score, body frame with real column names)."""
+    hi, hs = _best_header_row(rdf)
+    header = _dedupe([str(x).strip() for x in rdf.iloc[hi].tolist()])
+    body = rdf.iloc[hi + 1:].copy()
+    body.columns = header
+    return hs, body.dropna(how="all").reset_index(drop=True)
+
+
+def read_tables(name, raw):
     """
-    Read an Excel (any sheet) or CSV file. Scans all sheets, picks the one whose
-    rows best match the expected timesheet headers, finds the header row within
-    it (tolerating title/blank rows above the table), and de-duplicates columns.
+    EVERY table in the file as [(sheet label, score, body df), ...], best score
+    first. For each sheet the header row is located (tolerating title/blank rows
+    above the table) and duplicate column names are suffixed.
+
+    This replaces the old "pick the single best-matching sheet" behaviour, which
+    silently discarded data whenever a workbook split its timesheet across tabs
+    (e.g. one per sub team).
     """
     low = name.lower()
     if low.endswith((".xlsx", ".xlsm", ".xls")):
         sheets = _read_excel_sheets(raw, low)
-        candidates = list(sheets.values())
     else:
-        candidates = [pd.read_csv(io.BytesIO(raw), header=None, dtype=object)]
+        sheets = {"": pd.read_csv(io.BytesIO(raw), header=None, dtype=object)}
 
-    best = None  # (score, header_row_index, raw_df)
-    for rdf in candidates:
+    out = []
+    for label, rdf in sheets.items():
         if rdf is None or rdf.empty:
             continue
-        hi, hs = _best_header_row(rdf)
-        if best is None or hs > best[0]:
-            best = (hs, hi, rdf)
-    if best is None:
+        score, body = _table_from(rdf)
+        if not body.empty:
+            out.append((str(label), score, body))
+    if not out:
         raise ValueError("workbook has no readable sheet")
-
-    _, hi, rdf = best
-    header = _dedupe([str(x).strip() for x in rdf.iloc[hi].tolist()])
-    body = rdf.iloc[hi + 1:].copy()
-    body.columns = header
-    return body.dropna(how="all").reset_index(drop=True)
+    out.sort(key=lambda t: -t[1])
+    return out
 
 
-def extract_file(name, raw):
-    """
-    Read a file and return its long-format work entries (name, date, eff, bill).
-    Only the long/transactional format (Workingdate + Effort) is supported.
-    """
-    df = read_dataframe(name, raw)
-    df.columns = [str(c).strip() for c in df.columns]
-    cols = list(df.columns)
+def read_dataframe(name, raw):
+    """The single best-matching table in the file (used by diagnose.py)."""
+    return read_tables(name, raw)[0][2]
+
+
+def _map_columns(cols):
+    """Map sheet columns onto roles, or None if the required three are missing."""
     date_col = _find_col(cols, ["workingdate", "workdate"]) or _find_col(cols, ["date"])
     effort_col = _find_col(cols, ["effort"])
-    user_col = _find_col(cols, ["username", "user", "employee", "staff", "resource", "name"])
-    proj_col = _find_col(cols, ["projectcode", "project"])
-    task_col = _find_col(cols, ["jobtask", "tasktype", "task"])
-    cust_col = _find_col(cols, ["customer", "custname", "client"])
+    used = [c for c in (date_col, effort_col) if c]
+    user_col = _find_col(cols, ["username", "user", "employee", "staff", "resource", "name"],
+                         exclude=used)
     if not (date_col and effort_col and user_col):
+        return None
+    used.append(user_col)
+    proj_col = _find_col(cols, ["projectcode", "project"], exclude=used)
+    if proj_col:
+        used.append(proj_col)
+    task_col = _find_col(cols, ["jobtask", "tasktype", "task"], exclude=used)
+    if task_col:
+        used.append(task_col)
+    cust_col = _find_col(cols, ["customer", "custname", "client"], exclude=used)
+    return {"date": date_col, "effort": effort_col, "user": user_col,
+            "proj": proj_col, "task": task_col, "cust": cust_col}
+
+
+def extract_file(name, raw, warn=None):
+    """
+    Read a file and return its long-format work entries (name, date, eff, bill),
+    combining EVERY sheet that carries the long/transactional schema. Sheets
+    that don't (README, pivots, notes) are skipped; byte-identical duplicate
+    sheets are counted once.
+    """
+    frames, seen, sigs, mapped_any = [], [], set(), False
+    for label, _score, df in read_tables(name, raw):
+        df = df.copy()
+        df.columns = [str(c).strip() for c in df.columns]
+        cols = list(df.columns)
+        seen.append((label, cols))
+        m = _map_columns(cols)
+        if m is None:
+            continue
+        mapped_any = True
+        where = name + (f" [{label}]" if label else "")
+        work = extract_long_entries(df, m["user"], m["date"], m["effort"], m["proj"],
+                                    m["task"], m["cust"], warn=warn, where=where)
+        if work.empty:
+            continue
+        sig = pd.util.hash_pandas_object(work, index=False).values.tobytes()
+        if sig in sigs:                            # same rows already taken from
+            if warn is not None:                   # another tab (pivot / copy)
+                warn.append(f"{where}: identical to an earlier sheet, not counted twice.")
+            continue
+        sigs.add(sig)
+        frames.append(work)
+
+    if not mapped_any:
         raise ValueError(
-            f"expected Workingdate/Effort/User columns; got {cols}")
-    work = extract_long_entries(df, user_col, date_col, effort_col, proj_col, task_col,
-                                cust_col)
-    work["team"] = team_from_filename(name)        # sub team from filename code
-    return work
+            "expected Workingdate/Effort/User columns; got "
+            + " | ".join(f"{lbl or 'sheet'}: {c}" for lbl, c in seen))
+    if not frames:
+        raise ValueError("matched the expected columns but every row was unusable")
+
+    out = pd.concat(frames, ignore_index=True)
+    out["team"] = team_from_filename(name)         # sub team from filename code
+    if warn is not None and team_from_filename(name) is None:
+        warn.append(f"{name}: no HI0xxxxx cost-centre code in the filename, "
+                    f"so these rows have no sub team.")
+    return out
 
 
 def build_data():
@@ -491,10 +668,20 @@ def build_data():
     files = src.load_files()
     holidays = load_holidays()
 
+    warns: list[str] = []
     frames = []
+    seen_files: dict[str, str] = {}
     for name, year, raw in files:
+        # The same filename in the base folder AND a year subfolder used to be
+        # loaded twice, doubling that month's hours.
+        prev = seen_files.get(name.lower())
+        if prev is not None:
+            warns.append(f"{name}: also present in {prev or 'the base folder'} — "
+                         f"reading the copy in {year or 'the base folder'} only once.")
+            continue
+        seen_files[name.lower()] = year or ""
         try:
-            frames.append(extract_file(name, raw))
+            frames.append(extract_file(name, raw, warn=warns))
         except Exception as e:  # surface the offending file + its real columns
             try:
                 cols = list(read_dataframe(name, raw).columns)
@@ -564,8 +751,15 @@ def build_data():
             })
         projects.sort(key=lambda p: -p["hours"])
 
+    for w in warns:
+        print(f"[data] {w}", file=sys.stderr, flush=True)
+
     return {"mode": src.mode, "subteams": subteams, "months": months,
             "projects": projects,
+            # anything dropped, zeroed or de-duplicated while reading the
+            # workbooks — check this first when totals disagree with Excel
+            "warnings": warns,
+            "files": sorted(seen_files),
             # full holiday calendar so the client can compute capacity for
             # future months (load simulator forecasts)
             "holidays": sorted(d.isoformat() for d in holidays)}
