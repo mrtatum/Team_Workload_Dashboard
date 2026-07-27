@@ -24,6 +24,7 @@ Endpoints:
 from __future__ import annotations
 
 import datetime
+import hashlib
 import io
 import math
 import os
@@ -299,24 +300,46 @@ def _parse_dates_series(series, warn=None, where=""):
     if pd.api.types.is_datetime64_any_dtype(series):
         return pd.to_datetime(series, errors="coerce")   # real Excel dates: no ambiguity
 
+    def widen(chosen, dayfirst):
+        """
+        pandas guesses ONE format from the first value and coerces everything
+        that doesn't match to NaT. That is catastrophic for 'Mon 25-May-2026'
+        columns: the guess is '%a %d-%B-%Y' (%B = FULL month name), and May is
+        the only month whose full name equals its 3-letter abbreviation, so
+        every non-May row is silently dropped. Re-parse element-wise when the
+        single-format pass loses rows.
+
+        Applied only AFTER the day-first/month-first decision: element-wise
+        parsing rescues day > 12 values under either orientation, which would
+        otherwise hide the very signal that decision depends on.
+        """
+        if not int(chosen.isna().sum()):
+            return chosen
+        try:
+            mixed = pd.to_datetime(series, errors="coerce", dayfirst=dayfirst,
+                                   format="mixed")
+        except (ValueError, TypeError):          # pandas < 2.0 has no 'mixed'
+            return chosen
+        return mixed if mixed.notna().sum() > chosen.notna().sum() else chosen
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         mfirst = pd.to_datetime(series, errors="coerce")
         dfirst = pd.to_datetime(series, errors="coerce", dayfirst=True)
 
     if DATE_DAYFIRST is not None:
-        return dfirst if DATE_DAYFIRST else mfirst
+        return widen(dfirst, True) if DATE_DAYFIRST else widen(mfirst, False)
 
     n_m, n_d = int(mfirst.notna().sum()), int(dfirst.notna().sum())
     if n_d != n_m:
-        return dfirst if n_d > n_m else mfirst
+        return widen(dfirst, True) if n_d > n_m else widen(mfirst, False)
 
     # Both parse the same number of rows. Year-first values (2025-06-02) are
     # unambiguous whatever pandas' dayfirst inference does with them.
     txt = series.astype(str).str.strip()
     txt = txt[txt.str.lower().isin(("", "nan", "none")) == False]  # noqa: E712
     if len(txt) and txt.str.match(r"^\d{4}[-/.]").mean() > 0.5:
-        return mfirst
+        return widen(mfirst, False)
 
     # Otherwise, if the two readings disagree the column is genuinely ambiguous
     # (every day/month part <= 12) — keep the historical month-first reading but
@@ -326,7 +349,7 @@ def _parse_dates_series(series, warn=None, where=""):
             f"{where}: date column is ambiguous (every value fits both dd/mm and "
             f"mm/dd). Read as month-first; set DATE_DAYFIRST=1 if it should be "
             f"day-first.")
-    return mfirst
+    return widen(mfirst, False)
 
 
 def period_of(d):
@@ -640,8 +663,11 @@ def extract_file(name, raw, warn=None):
                                     m["task"], m["cust"], warn=warn, where=where)
         if work.empty:
             continue
-        sig = pd.util.hash_pandas_object(work, index=False).values.tobytes()
-        if sig in sigs:                            # same rows already taken from
+        try:
+            sig = pd.util.hash_pandas_object(work, index=False).values.tobytes()
+        except Exception:                          # noqa: BLE001 - unhashable cell
+            sig = None
+        if sig is not None and sig in sigs:        # same rows already taken from
             if warn is not None:                   # another tab (pivot / copy)
                 warn.append(f"{where}: identical to an earlier sheet, not counted twice.")
             continue
@@ -652,8 +678,15 @@ def extract_file(name, raw, warn=None):
         raise ValueError(
             "expected Workingdate/Effort/User columns; got "
             + " | ".join(f"{lbl or 'sheet'}: {c}" for lbl, c in seen))
+
+    # A file whose columns are right but which currently holds no usable rows
+    # (an empty template, a month not started yet) is NOT an error — returning
+    # an empty frame keeps the rest of the dashboard alive.
     if not frames:
-        raise ValueError("matched the expected columns but every row was unusable")
+        if warn is not None:
+            warn.append(f"{name}: columns matched but no usable rows — ignored.")
+        return pd.DataFrame(columns=["name", "date", "eff", "bill", "task",
+                                     "proj", "cust", "team"])
 
     out = pd.concat(frames, ignore_index=True)
     out["team"] = team_from_filename(name)         # sub team from filename code
@@ -670,27 +703,37 @@ def build_data():
 
     warns: list[str] = []
     frames = []
-    seen_files: dict[str, str] = {}
+    read_ok, failed = [], []
+    seen_blobs: dict[bytes, str] = {}
     for name, year, raw in files:
-        # The same filename in the base folder AND a year subfolder used to be
-        # loaded twice, doubling that month's hours.
-        prev = seen_files.get(name.lower())
+        # The identical file in the base folder AND a year subfolder used to be
+        # loaded twice, doubling that month's hours. Match on CONTENT, not on
+        # the filename — the same name in different year folders is normal and
+        # those are genuinely different files.
+        digest = hashlib.sha1(raw).digest()
+        prev = seen_blobs.get(digest)
         if prev is not None:
-            warns.append(f"{name}: also present in {prev or 'the base folder'} — "
-                         f"reading the copy in {year or 'the base folder'} only once.")
+            warns.append(f"{name} ({year or 'base folder'}): byte-identical to "
+                         f"{prev} — counted once.")
             continue
-        seen_files[name.lower()] = year or ""
+        seen_blobs[digest] = f"{name} ({year or 'base folder'})"
         try:
             frames.append(extract_file(name, raw, warn=warns))
+            read_ok.append(name)
         except Exception as e:  # surface the offending file + its real columns
             try:
                 cols = list(read_dataframe(name, raw).columns)
             except Exception:
                 cols = "<could not read file>"
-            raise OneDriveError(
-                f"[build {VERSION}] Failed to parse '{name}': {type(e).__name__}: {e}. "
-                f"Columns detected: {cols}"
-            )
+            # One unreadable file must not blank out the whole dashboard; record
+            # it and carry on with the others.
+            failed.append(name)
+            warns.append(
+                f"{name}: SKIPPED — {type(e).__name__}: {e}. Columns detected: {cols}")
+
+    if failed and not read_ok:
+        raise OneDriveError(
+            f"[build {VERSION}] No file could be parsed. " + " | ".join(warns))
 
     work = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
         columns=["name", "date", "eff", "bill", "task", "proj", "cust"])
@@ -759,7 +802,8 @@ def build_data():
             # anything dropped, zeroed or de-duplicated while reading the
             # workbooks — check this first when totals disagree with Excel
             "warnings": warns,
-            "files": sorted(seen_files),
+            "files": sorted(read_ok),
+            "skipped": sorted(failed),
             # full holiday calendar so the client can compute capacity for
             # future months (load simulator forecasts)
             "holidays": sorted(d.isoformat() for d in holidays)}

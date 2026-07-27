@@ -112,30 +112,53 @@ class OneDriveSource:
             url = data.get("@odata.nextLink")
         return items
 
-    def _list_data(self) -> list[tuple[dict, str | None]]:
-        """
-        Return [(item, year_folder_name|None), ...]. Files directly in the base
-        folder get year=None; files inside a subfolder get that folder's name
-        (treated as the year). Matches Excel and CSV.
-        """
+    MAX_DEPTH = 6
+
+    def _base_url(self) -> str:
         folder = self.folder.strip("/")
-        base = (f"{GRAPH_BASE}/me/drive/root:/{folder}:/children" if folder
+        return (f"{GRAPH_BASE}/me/drive/root:/{folder}:/children" if folder
                 else f"{GRAPH_BASE}/me/drive/root/children")
 
-        def is_data(it):
-            return "file" in it and it["name"].lower().endswith(DATA_EXTS) \
-                and not it["name"].startswith("~$")          # skip Excel temp/lock files
+    @staticmethod
+    def _is_data(it) -> bool:
+        return ("file" in it and it["name"].lower().endswith(DATA_EXTS)
+                and not it["name"].startswith("~$"))   # skip Excel temp/lock files
 
-        results: list[tuple[dict, str | None]] = []
-        for it in self._children(base):
-            if is_data(it):
-                results.append((it, None))
-            elif "folder" in it:
-                sub = f"{GRAPH_BASE}/me/drive/items/{it['id']}/children"
-                for c in self._children(sub):
-                    if is_data(c):
-                        results.append((c, it["name"]))
-        return results
+    def walk(self, include_all: bool = False) -> list[tuple[dict, str, bool]]:
+        """
+        Walk the whole folder tree. Returns [(item, relative_dir, is_data), ...].
+
+        The previous version descended exactly ONE level, so a layout like
+        <folder>/2026/06/timesheet.xlsx was invisible and those months simply
+        never appeared on the dashboard. Now recurses to MAX_DEPTH.
+
+        include_all=True also returns files that don't match DATA_EXTS, so a
+        diagnostic can show what is being ignored (e.g. an .xlsb export).
+        """
+        out: list[tuple[dict, str, bool]] = []
+        stack = [(self._base_url(), "", 0)]
+        while stack:
+            url, rel, depth = stack.pop()
+            for it in self._children(url):
+                if "folder" in it:
+                    if depth + 1 <= self.MAX_DEPTH:
+                        sub = f"{GRAPH_BASE}/me/drive/items/{it['id']}/children"
+                        stack.append((sub, f"{rel}/{it['name']}".strip("/"), depth + 1))
+                    continue
+                if "file" not in it:
+                    continue
+                data = self._is_data(it)
+                if data or include_all:
+                    out.append((it, rel, data))
+        out.sort(key=lambda t: (t[1], t[0]["name"]))
+        return out
+
+    def _list_data(self) -> list[tuple[dict, str | None]]:
+        """
+        Return [(item, relative_dir|None), ...] for every Excel/CSV file
+        anywhere under the base folder.
+        """
+        return [(it, rel or None) for it, rel, is_data in self.walk() if is_data]
 
     def _download(self, item: dict) -> bytes:
         url = item.get("@microsoft.graph.downloadUrl")
@@ -149,8 +172,10 @@ class OneDriveSource:
 
     def load_files(self) -> list[tuple[str, str | None, bytes]]:
         """
-        Return [(filename, year_folder|None, raw_csv_bytes), ...] for every CSV.
-        Files may sit directly in the folder, or inside year subfolders.
+        Return [(path, containing_dir|None, raw_bytes), ...] for every Excel/CSV
+        file at ANY depth under the folder. `path` is relative to the base
+        folder ("2026/06/timesheet.xlsx") so nested files stay distinguishable
+        in logs and warnings.
         """
         if self.local_dir:
             base = os.path.abspath(self.local_dir)
@@ -161,17 +186,23 @@ class OneDriveSource:
             for p in sorted(set(paths)):
                 if os.path.basename(p).startswith("~$"):
                     continue
-                parent = os.path.dirname(os.path.abspath(p))
-                year = None if parent == base else os.path.basename(parent)
-                out.append((os.path.basename(p), year, Path(p).read_bytes()))
+                rel_dir = os.path.relpath(os.path.dirname(os.path.abspath(p)), base)
+                rel_dir = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
+                rel = f"{rel_dir}/{os.path.basename(p)}" if rel_dir else os.path.basename(p)
+                out.append((rel, rel_dir or None, Path(p).read_bytes()))
             if not out:
                 raise OneDriveError(f"No Excel/CSV files in LOCAL_DATA_DIR={self.local_dir}")
             return out
 
         items = self._list_data()
         if not items:
-            raise OneDriveError(f"No Excel/CSV files found in '{self.folder}'.")
-        return [(it["name"], year, self._download(it)) for it, year in items]
+            raise OneDriveError(
+                f"No Excel/CSV files found anywhere under '{self.folder}'. "
+                f"Check the folder name (ONEDRIVE_FOLDER) and that the files are "
+                f".xlsx/.xlsm/.xls/.csv — other formats such as .xlsb are ignored. "
+                f"Run `python3 diagnose.py --tree` to list what is actually there.")
+        return [(f"{rel}/{it['name']}" if rel else it["name"], rel, self._download(it))
+                for it, rel in items]
 
     @property
     def mode(self) -> str:
