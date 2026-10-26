@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 token.json
+token_state.json
+token_state.json.lock
+.token_state.*
 *.token
 secrets/
 

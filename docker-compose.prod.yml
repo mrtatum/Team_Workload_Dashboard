@@ -1,0 +1,28 @@
+# Run the PUBLISHED image — no source checkout needed on the target machine.
+#
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Only this file and a .env sitting next to it are required.
+# Pin TAG to a version (v1.1.0) rather than latest for anything you rely on.
+
+services:
+  team-dashboard:
+    image: ghcr.io/mrtatum/team-workload-dashboard:${TAG:-latest}
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      # Keeps the rotated OneDrive refresh token across restarts/upgrades.
+      # Without it the app falls back to REFRESH_TOKEN in .env, which dies
+      # 90 days after it was issued (AADSTS700082).
+      - token-data:/data
+    # To use a mounted token.json instead of REFRESH_TOKEN, uncomment and set
+    # TOKEN_FILE=/secrets/token.json in .env:
+    # add this line under volumes: above
+    #   - ./token.json:/secrets/token.json:ro
+
+volumes:
+  token-data:

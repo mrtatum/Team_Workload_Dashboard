@@ -131,6 +131,34 @@ Env vars take priority; the token file is the fallback when `CLIENT_ID` /
 
 ---
 
+### 4. Token keep-alive (why it doesn't expire)
+
+Microsoft refresh tokens **cannot** be made non-expiring: a token dies after
+**90 days without use** (`AADSTS700082`). The dashboard avoids that by never
+letting it sit idle (`token_store.py`):
+
+- Every rotated refresh token is saved to `TOKEN_STATE_FILE`
+  (`/data/token_state.json`, on the `token-data` volume), so restarts and image
+  upgrades resume from the newest token, not the original one in `.env`.
+- A background thread renews the token every `TOKEN_KEEPALIVE_HOURS` (24h),
+  even if nobody opens the dashboard. Each renewal restarts the 90-day clock.
+- `GET /api/health` shows `token.last_renewed`, `token.expires_if_unused` and
+  `token.last_error`.
+
+You only need to sign in again if the account password changes, IT revokes
+sessions, or the container is stopped for 90+ days. Then:
+
+```bash
+python get_refresh_token.py            # sign in once
+# put the new refresh_token into .env as REFRESH_TOKEN, then:
+docker compose -f docker-compose.prod.yml up -d --force-recreate
+```
+
+The changed `REFRESH_TOKEN` is detected automatically and replaces the saved one.
+
+> **Keep the `token-data` volume.** `docker compose down -v` deletes it and
+> sends the app back to the `.env` token.
+
 ## Configuration reference (all env vars)
 
 Copy `.env.example` to `.env`. Everything is configured through environment
@@ -145,6 +173,8 @@ variables.
 | `REFRESH_TOKEN` | —                                        | OAuth refresh token. **Required** for OneDrive mode.          |
 | `SCOPES`        | `offline_access Files.Read User.Read`    | OAuth scopes used when refreshing the access token.           |
 | `TOKEN_FILE`    | `/secrets/token.json`                    | Fallback JSON credential file if the vars above are absent.   |
+| `TOKEN_STATE_FILE` | `/data/token_state.json` (image)     | Where rotated refresh tokens are persisted. Must be writable. |
+| `TOKEN_KEEPALIVE_HOURS` | `24`                            | How often the background keep-alive renews the token.        |
 
 ### Data source & caching
 

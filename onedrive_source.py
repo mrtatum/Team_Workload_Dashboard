@@ -7,6 +7,7 @@ token. Each CSV is one month (the filename identifies the month).
 Credentials (env vars take priority):
   A) Env: CLIENT_ID, TENANT_ID, REFRESH_TOKEN
   B) Mounted token file: TOKEN_FILE=/secrets/token.json (from get_refresh_token.py)
+Rotated tokens are persisted and kept alive by token_store.py (TOKEN_STATE_FILE).
 
 Settings:
   ONEDRIVE_FOLDER   folder to read (default "Sysinfra_Workload")
@@ -25,6 +26,8 @@ from pathlib import Path
 
 import requests
 
+from token_store import TokenError, store_from_env
+
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 DATA_EXTS = (".xlsx", ".xlsm", ".xls", ".csv")  # Excel preferred; CSV still ok
 
@@ -38,63 +41,25 @@ class OneDriveSource:
         self.local_dir = os.environ.get("LOCAL_DATA_DIR", "").strip()
         self.folder = os.environ.get("ONEDRIVE_FOLDER", "Sysinfra_Workload").strip()
         self.scopes = os.environ.get("SCOPES", "offline_access Files.Read User.Read").strip()
-        self._access_token = ""
-        self._expires_at = 0.0
+        self._store = None
 
         if self.local_dir:
             return  # no credentials needed in local mode
 
-        client_id = os.environ.get("CLIENT_ID", "").strip()
-        tenant_id = os.environ.get("TENANT_ID", "organizations").strip()
-        refresh_token = os.environ.get("REFRESH_TOKEN", "").strip()
-
-        if not (client_id and refresh_token):
-            token_file = Path(os.environ.get("TOKEN_FILE", "/secrets/token.json"))
-            if token_file.exists():
-                data = json.loads(token_file.read_text())
-                client_id = client_id or data.get("client_id", "")
-                tenant_id = data.get("tenant_id", tenant_id)
-                refresh_token = refresh_token or data.get("refresh_token", "")
-                # Azure AD does not echo offline_access back in `scope`, so
-                # replaying it verbatim asks for a token with no refresh — the
-                # chain then dies at the next rotation. Put it back.
-                scope = data.get("scope", self.scopes)
-                if "offline_access" not in scope.split():
-                    scope = "offline_access " + scope
-                self.scopes = scope
-
-        if not client_id or not refresh_token:
-            raise OneDriveError(
-                "Missing credentials. Set CLIENT_ID + REFRESH_TOKEN (+TENANT_ID), "
-                "mount a token.json at TOKEN_FILE, or set LOCAL_DATA_DIR for testing."
-            )
-        self.client_id = client_id
-        self.tenant_id = tenant_id
-        self.refresh_token = refresh_token
-        self.token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        try:
+            self._store = store_from_env()
+        except TokenError as e:
+            raise OneDriveError(str(e)) from None
 
     # --------------------------------------------------------------- auth
     def _access(self) -> str:
-        if self._access_token and time.time() < self._expires_at - 60:
-            return self._access_token
-        resp = requests.post(
-            self.token_url,
-            data={
-                "grant_type": "refresh_token",
-                "client_id": self.client_id,
-                "refresh_token": self.refresh_token,
-                "scope": self.scopes,
-            },
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            raise OneDriveError(f"Token refresh failed: {resp.status_code} {resp.text}")
-        data = resp.json()
-        self._access_token = data["access_token"]
-        self._expires_at = time.time() + int(data.get("expires_in", 3600))
-        if data.get("refresh_token"):
-            self.refresh_token = data["refresh_token"]
-        return self._access_token
+        # TokenStore persists every rotated refresh token (TOKEN_STATE_FILE) so
+        # restarts don't fall back to the stale seed in .env — that fallback is
+        # what produced AADSTS700082 after 90 days.
+        try:
+            return self._store.access_token()
+        except TokenError as e:
+            raise OneDriveError(str(e)) from None
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._access()}"}

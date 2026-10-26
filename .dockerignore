@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 token.json
+token_state.json*
 *.md
 sample_data/
 .git/

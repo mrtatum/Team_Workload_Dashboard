@@ -18,7 +18,7 @@ Business rules:
 Endpoints:
     GET /            -> dashboard (static/index.html)
     GET /api/data    -> parsed JSON for all periods
-    GET /api/health  -> {"status": "ok", "version": ...}
+    GET /api/health  -> {"status": "ok", "version": ..., "token": {last_renewed, expires_if_unused, ...}}
 """
 
 from __future__ import annotations
@@ -37,10 +37,11 @@ import pandas as pd
 from flask import Flask, jsonify, request, send_from_directory
 
 from onedrive_source import OneDriveError, OneDriveSource
+import token_store
 
 app = Flask(__name__, static_folder="static")
 
-VERSION = "2026-07-27-parsefixes"
+VERSION = "2026-10-26-token-keepalive"
 CACHE_TTL = int(os.environ.get("CACHE_TTL_SECONDS", "300"))
 STANDARD_DAY_HOURS = float(os.environ.get("STANDARD_DAY_HOURS", "8"))
 HOLIDAYS_FILE = os.environ.get("HOLIDAYS_FILE", "holidays.txt")
@@ -829,7 +830,18 @@ def api_data():
 
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "version": VERSION})
+    out = {"status": "ok", "version": VERSION}
+    if not os.environ.get("LOCAL_DATA_DIR", "").strip():
+        try:
+            out["token"] = token_store.store_from_env().status()
+        except token_store.TokenError as e:
+            out["token"] = {"last_error": str(e)}
+    return jsonify(out)
+
+
+# Renew the OneDrive refresh token daily so it never hits the 90-day
+# inactivity limit, even when nobody opens the dashboard.
+token_store.start_keepalive()
 
 
 @app.route("/projects")

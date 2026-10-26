@@ -7,7 +7,15 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    volumes:
+      # Keeps the rotated OneDrive refresh token across restarts/upgrades.
+      # Without it the app falls back to REFRESH_TOKEN in .env, which dies
+      # 90 days after it was issued (AADSTS700082).
+      - token-data:/data
     # To use a mounted token.json instead of REFRESH_TOKEN, uncomment and set
     # TOKEN_FILE=/secrets/token.json in .env:
-    # volumes:
+    # add this line under volumes: above
     #   - ../onedrive_auth/token.json:/secrets/token.json:ro
+
+volumes:
+  token-data:
